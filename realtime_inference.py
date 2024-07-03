@@ -102,9 +102,8 @@ class UltrasoundProbe:
 class KukaControl:
 
     def __init__(self):
-        self.joint_publisher = rospy.Publisher('/iiwa/command/JointPosition', JointPosition, queue_size=10)
+        self.joint_publisher = rospy.Publisher('/iiwa/command/JointPosition', JointPosition, queue_size=20)
         self.pose_publisher = rospy.Publisher('/iiwa/command/CartesianPoseLin', PoseStamped, queue_size=20)
-        # self.pose_action_publisher = rospy.Publisher('/iiwa/action/move_to_cartesian_pose/goal', MoveToCartesianPoseGoal, queue_size=1)
         self.image_pub_seg_stable = rospy.Publisher("/imfusion/sim_seg_s", ROSImage, queue_size=1)
 
         self.bridge = CvBridge()
@@ -126,6 +125,8 @@ class KukaControl:
     def get_current_pose(self):
         try:
             current_pose = rospy.wait_for_message('/iiwa/state/CartesianPose', CartesianPose, timeout=2)
+            if current_pose is None:
+                raise rospy.ROSException('No pose from /iiwa/state/CartesianPose received')
             self.connected = True
             return current_pose.poseStamped
         # print('CURRENT POSE: ', current_pose.poseStamped)
@@ -231,14 +232,16 @@ class KukaControl:
         current_pose.pose.position.x = current_pose.pose.position.x - STEP_SIZE     
         self.pose_publisher.publish(current_pose)
     
-    def move_flange_with_dir_retention(self, direction, dist):
-        current_pose = self.get_current_pose()
+    def move_flange_with_dir_retention(self, direction, dist, current_pose=None):
+        if current_pose is None:
+            current_pose = self.get_current_pose()
         current_pose.pose.position.x = current_pose.pose.position.x + direction[0] * dist
         current_pose.pose.position.y = current_pose.pose.position.y + direction[1] * dist
         current_pose.pose.position.z = current_pose.pose.position.z + direction[2] * dist
         self.pose_publisher.publish(current_pose)
         while not self.destination_reached():
             rospy.sleep(0.5)
+        self.probe.update_probe(current_pose)
 
     def rotate(self, axis='y', angle=30):
         '''
@@ -438,7 +441,8 @@ class KukaControl:
         for angle in angles:
             self.tilt(axis, angle)
             probe_pos.append(self.probe.position)
-        
+
+        self.sweeped = True
         diffs = [np.linalg.norm(probe_pos[i] - probe_pos[0]) for i in range(1, len(angles) + 1)]
         print('DIFFS: ', diffs)
         print('Avg diff: ', np.mean(diffs))
@@ -672,11 +676,7 @@ class KukaControl:
         combined_dist = np.linalg.norm(combined_dir)
         combined_dir = combined_dir / combined_dist
 
-        self.move_flange_with_dir_retention(combined_dir, combined_dist)
-
-        current_pose = self.get_current_pose()
-        self.probe.update_probe(current_pose)
-        # print('END POSE: \n', current_pose.pose.position)
+        self.move_flange_with_dir_retention(combined_dir, combined_dist, current_pose)
 
     def follow_segmentation(self, frame, pred_mask, grace = False):
         global com_mask_stack
@@ -702,34 +702,38 @@ class KukaControl:
         ------------------------------------------- (H, W)
         '''
         if grace:
-            grace_w = 0.45
+            # com
+            grace_w_top = 0.45
+            grace_w_bottom = 0.45
             grace_h_top = 0.45
             grace_h_bottom = 0.3
+            # right tip
+            grace_w = 0.47
         else:
             grace_w = 0.5
             grace_h_top = 0.5
             grace_h_bottom = 0.5
 
         # translate to a bbox of (x1, y1, x2, y2)
-        grace_box = [W * grace_w, H * grace_h_top, W * (1 - grace_w), H * (1 - grace_h_bottom)]
+        grace_box = [W * grace_w_top, H * grace_h_top, W * (1 - grace_w_bottom), H * (1 - grace_h_bottom)]
 
-        clamped_com_u = int(max(min(com_u, W * (1 - grace_w)), W * grace_w))
+        clamped_com_u = int(max(min(com_u, W * (1 - grace_w_bottom)), W * grace_w_top))
         clamped_com_v = int(max(min(com_v, H * (1 - grace_h_bottom)), H * grace_h_top))
         # check if the com is in the grace area
         if (clamped_com_u, clamped_com_v) != (com_u, com_v):
-            # TODO: move the robot in the direction of the com
+            # move the robot in the direction of the com
             self.move_point(com_u, com_v, clamped_com_u, clamped_com_v)
             print('Moving from (', com_u, com_v, ') to (', clamped_com_u, clamped_com_v, ')')
         else:
             print('Center of Mass in the grace area. No movement.')
 
         # debug, draw the grace area, center of mass and the movement
-        frame_with_mask = draw_mask(frame, pred_mask)
-        cv2.rectangle(img=frame_with_mask, pt1=(int(grace_box[0]), int(grace_box[1])), pt2=(int(grace_box[2]), int(grace_box[3])), color=(0, 255, 0), thickness=2)
-        cv2.circle(frame_with_mask, (int(com_u), int(com_v)), 5, (255, 255, 255), -1)
-        cv2.circle(frame_with_mask, (int(clamped_com_u), int(clamped_com_v)), 5, (0, 0, 255), -1)
-        cv2.imshow('Processed Frame', frame_with_mask)
-        cv2.waitKey(1)
+        # frame_with_mask = draw_mask(frame, pred_mask)
+        # cv2.rectangle(img=frame_with_mask, pt1=(int(grace_box[0]), int(grace_box[1])), pt2=(int(grace_box[2]), int(grace_box[3])), color=(0, 255, 0), thickness=2)
+        # cv2.circle(frame_with_mask, (int(com_u), int(com_v)), 5, (255, 255, 255), -1)
+        # cv2.circle(frame_with_mask, (int(clamped_com_u), int(clamped_com_v)), 5, (0, 0, 255), -1)
+        # cv2.imshow('Processed Frame', frame_with_mask)
+        # cv2.waitKey(1)
 
 
 def image_callback(msg):
@@ -793,16 +797,24 @@ def centers_of_mass_mask(pred_mask):
 
 def tip_mask(pred_mask, dir = 'right'):
     # find the rightmost non 0 pixel in the mask
-    # if there's multiple non 0 pixels, take the mean of them
+    # if there's multiple non 0 pixels, index them and take the one in the middle
     mask = pred_mask.copy()
     mask[mask != 0] = 1
+    if np.count_nonzero(mask) == 0:
+        return np.array([0, 0])
     if dir == 'right':
-        tip = np.max(np.nonzero(mask)[1])
+        tip_x = np.max(np.nonzero(mask)[1])
     elif dir == 'left':
-        tip = np.min(np.nonzero(mask)[1])
+        tip_x = np.min(np.nonzero(mask)[1])
     else:
         raise ValueError('Direction must be either right or left')
-    return np.array([int(np.mean(np.nonzero(mask)[0])), tip])
+    
+    # find the list of coords where x is tip
+    tip_coords = np.argwhere(mask[:, tip_x] == 1)
+    # take the middle y coord
+    tip_y = tip_coords[len(tip_coords) // 2][0]
+
+    return np.array([tip_x, tip_y])
 
 # def initialize_then_segment(kuka : KukaControl = None):
 #     if kuka is not None:
@@ -815,7 +827,19 @@ def tip_mask(pred_mask, dir = 'right'):
 def segment(kuka : KukaControl = None):
     def sweep_thread():
         while not rospy.is_shutdown():
-            finished = kuka.sweep('y', 5)
+            finished = kuka.sweep_list('y', [5,-10])
+            if finished:
+                break
+    
+    def follow_segmentation_thread(kuka, cv_image, pred_mask):
+        kuka.follow_segmentation(cv_image, pred_mask, grace=True)
+
+    def move_to_pose_thread(kuka, pose):
+        kuka.pose_publisher.publish(pose)
+        while not kuka.destination_reached():
+            rospy.sleep(0.5)
+        
+
             
 
     if kuka is not None:
@@ -877,7 +901,7 @@ def segment(kuka : KukaControl = None):
     init_mask_size = 0
     init_pose = None
 
-    sweep_thread_instance = threading.Thread(target=sweep_thread)
+    
     first_sweep = False
     initialized = False
     with torch.cuda.amp.autocast():
@@ -891,6 +915,7 @@ def segment(kuka : KukaControl = None):
                     bbox = [[roi[0], roi[1]], [roi[0] + roi[2], roi[1] + roi[3]]]
                     cv2.destroyWindow("ROI selector")
 
+                    # bbox mode
                     pred_mask, _ = segtracker.seg_acc_bbox(frame, bbox)
                     # pred_mask = segtracker.seg(frame)
 
@@ -916,7 +941,8 @@ def segment(kuka : KukaControl = None):
 
                 # calculate com of mask to the frame
                 global com_mask_stack
-                com_mask_stack.append(centers_of_mass_mask(pred_mask))
+                # com_mask_stack.append(centers_of_mass_mask(pred_mask))
+                com_mask_stack.append(tip_mask(pred_mask, 'right'))
                 
                 # print('Catheter Center of Mass: ', com_mask, end='\n')
                 if kuka is None:
@@ -935,13 +961,13 @@ def segment(kuka : KukaControl = None):
                         #     cv2.line(frame_with_mask, (com_mask_stack[i][0], com_mask_stack[i][1]), (com_mask_stack[i+1][0], com_mask_stack[i+1][1]), (0, 255, 0), 2)
                     cv2.imshow('Processed Frame', frame_with_mask)
                     cv2.waitKey(1)
-                else:                    # move the robot using mask com
+                else:
                     if pred_mask is None:
                         continue
                     print('Catheter Center of Mass: ', com_mask_stack[-1], end='\n')
                     if not initialized:
                         if not first_sweep:
-                            sweep_thread_instance.start()
+                            threading.Thread(target=sweep_thread).start()
                             first_sweep = True
 
                         mask_size = np.count_nonzero(pred_mask)
@@ -951,25 +977,21 @@ def segment(kuka : KukaControl = None):
                         
                         if kuka.sweeped:
                             # move the robot to the initial position
-                            kuka.pose_publisher.publish(init_pose)
-                            while not kuka.destination_reached():
-                                rospy.sleep(0.5)
+                            threading.Thread(target=move_to_pose_thread, args=(kuka, init_pose)).start()
                             initialized = True
-                            cv2.destroyAllWindows()
-                            # stop the sweep thread
-                            sweep_thread_instance.join(timeout=0)
-
                             print('INITIALIZED')
                             continue
                         
-                        frame_with_mask = draw_mask(frame, pred_mask)
-                        cv2.imshow('Processed Frame', frame_with_mask)
-                        cv2.waitKey(1)
                     else:
-                        
-                        kuka.follow_segmentation(frame, pred_mask, True)
+                        if pred_mask is not None:
+                            threading.Thread(target=follow_segmentation_thread, args=(kuka, frame, pred_mask)).start()
 
-                
+                frame_with_mask = draw_mask(frame, pred_mask)
+                #show the com
+                cv2.circle(frame_with_mask, (com_mask_stack[-1][0], com_mask_stack[-1][1]), 5, (0, 255, 0), -1)
+                cv2.imshow('Processed Frame', frame_with_mask)
+                cv2.waitKey(1)
+
                 if frame_idx > 0 and start_time is not None:
                     elapsed_time = time.time() - start_time
                     fps = frame_idx / elapsed_time
@@ -1021,7 +1043,7 @@ def main():
     # tip = tip_mask(mock_mask, 'right')
 
     # # draw the tip of the probe as red
-    # cv2.circle(mock_mask, (tip[1], tip[0]), 5, (255, 0, 0), -1)
+    # cv2.circle(mock_mask, (tip[0], tip[1]), 5, (255, 0, 0), -1)
     # cv2.imshow('Tip of the probe', mock_mask)
     # cv2.waitKey(0)
 
@@ -1067,7 +1089,6 @@ def main():
         
     print(rospy.get_namespace())
     # current_pose = kuka.get_current_pose()
-    # kuka.set_init_pose()
     while not rospy.is_shutdown():
         
 
@@ -1120,9 +1141,6 @@ def main():
 
         # quit the loop
         break
-
-        # set_force_mode(cartesian_dof=3, desired_force=INIT_FORCE, desired_stiffness=STIFFNESS,
-        #                    max_deviation_pos=1000, max_deviation_rotation_in_deg=1000)
         
         set_position_control_mode()
 
