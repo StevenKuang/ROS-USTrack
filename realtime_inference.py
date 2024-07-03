@@ -35,6 +35,7 @@ import time
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import threading
 
 bridge = CvBridge()
 image_received = False
@@ -61,6 +62,7 @@ MM2M = 0.001
 STEP_SIZE = 0.05  # 2cm
 # STEP_SIZE = 0.05  # 5cm
 
+
 def ping(host):
     """
     Returns True if host (str) responds to a ping request.
@@ -84,8 +86,6 @@ class UltrasoundProbe:
             self.x_dir, self.y_dir, self.z_dir = None, None, None
         else:
             self.position, self.orientation, [self.x_dir, self.y_dir, self.z_dir] = self.flange_to_probe(kuka_pose)
-
-        
 
     def flange_to_probe(self, kuka_pose):
         flange_position = np.array([kuka_pose.pose.position.x, kuka_pose.pose.position.y, kuka_pose.pose.position.z])
@@ -117,6 +117,7 @@ class KukaControl:
 
         self.connected = False
         self.probe = UltrasoundProbe(0.2)
+        self.sweeped = False
 
     def attach_probe(self, probe):
         self.probe = probe
@@ -162,7 +163,6 @@ class KukaControl:
         new_a7_position = a7_position + np.radians(angle)
         self.pub_a7_state(joint_state, new_a7_position)
     
-
     def get_flange_directions(self, current_pose):
         
         # Extract the quaternion
@@ -295,9 +295,9 @@ class KukaControl:
         # Get current pose
         current_pose = self.get_current_pose()
         self.probe.update_probe(current_pose)
-        print('CURRENT POSE: \n', current_pose.pose)
-        print('--------------------------------------\n')
-        print('PROBE DIRECTIONS: \n', self.probe.x_dir, self.probe.y_dir, self.probe.z_dir)
+        # print('CURRENT POSE: \n', current_pose.pose)
+        # print('--------------------------------------\n')
+        # print('PROBE DIRECTIONS: \n', self.probe.x_dir, self.probe.y_dir, self.probe.z_dir)
 
         # Calculate the new positions of the flange maintaining the probe tip position
         flange_tip_position = np.array([current_pose.pose.position.x, current_pose.pose.position.y, current_pose.pose.position.z])
@@ -397,8 +397,8 @@ class KukaControl:
         new_pose.pose.orientation.w = new_quaternion[3]
         
         self.pose_publisher.publish(new_pose)
-        print('PUBLISH POSE: \n', new_pose.pose)
-        print('--------------------------------------\n')
+        # print('PUBLISH POSE: \n', new_pose.pose)
+        # print('--------------------------------------\n')
         while not self.destination_reached():
             rospy.sleep(0.5)
         
@@ -413,6 +413,8 @@ class KukaControl:
         then [angle*2] degrees to clockwise,
         then [angle] degrees to counter clockwise
         '''
+
+        
         probe_pos = [self.probe.position]
         self.tilt(axis, angle)
         probe_pos.append(self.probe.position)
@@ -421,6 +423,7 @@ class KukaControl:
         self.tilt(axis, angle)
         probe_pos.append(self.probe.position)
 
+        self.sweeped = True
         diffs = [np.linalg.norm(probe_pos[i] - probe_pos[0]) for i in range(1, 4)]
         print('DIFFS: ', diffs)
         print('Avg diff: ', np.mean(diffs))
@@ -672,8 +675,8 @@ class KukaControl:
         self.move_flange_with_dir_retention(combined_dir, combined_dist)
 
         current_pose = self.get_current_pose()
-        print('END POSE: \n', current_pose.pose.position)
-
+        self.probe.update_probe(current_pose)
+        # print('END POSE: \n', current_pose.pose.position)
 
     def follow_segmentation(self, frame, pred_mask, grace = False):
         global com_mask_stack
@@ -788,8 +791,33 @@ def centers_of_mass_mask(pred_mask):
         return np.array([0, 0])
     return np.array([int(np.mean(np.nonzero(mask)[1])), int(np.mean(np.nonzero(mask)[0]))])
 
+def tip_mask(pred_mask, dir = 'right'):
+    # find the rightmost non 0 pixel in the mask
+    # if there's multiple non 0 pixels, take the mean of them
+    mask = pred_mask.copy()
+    mask[mask != 0] = 1
+    if dir == 'right':
+        tip = np.max(np.nonzero(mask)[1])
+    elif dir == 'left':
+        tip = np.min(np.nonzero(mask)[1])
+    else:
+        raise ValueError('Direction must be either right or left')
+    return np.array([int(np.mean(np.nonzero(mask)[0])), tip])
+
+# def initialize_then_segment(kuka : KukaControl = None):
+#     if kuka is not None:
+#         # set position mode 
+#         print('##################################set_position_control_mode############################################')
+#         set_position_control_mode()
+#         print("============ Press `Enter` to continue ...")
+#         input()
 
 def segment(kuka : KukaControl = None):
+    def sweep_thread():
+        while not rospy.is_shutdown():
+            finished = kuka.sweep('y', 5)
+            
+
     if kuka is not None:
         # print('##################################set_force_mode############################################')
         # print("============ START FORCE ADJUSTMENT ...")
@@ -845,6 +873,13 @@ def segment(kuka : KukaControl = None):
     sam_gap = segtracker_args['sam_gap']
 
     start_time = None
+    initialized = False
+    init_mask_size = 0
+    init_pose = None
+
+    sweep_thread_instance = threading.Thread(target=sweep_thread)
+    first_sweep = False
+    initialized = False
     with torch.cuda.amp.autocast():
         while not rospy.is_shutdown():
             if image_received:
@@ -904,7 +939,35 @@ def segment(kuka : KukaControl = None):
                     if pred_mask is None:
                         continue
                     print('Catheter Center of Mass: ', com_mask_stack[-1], end='\n')
-                    kuka.follow_segmentation(frame, pred_mask, True)
+                    if not initialized:
+                        if not first_sweep:
+                            sweep_thread_instance.start()
+                            first_sweep = True
+
+                        mask_size = np.count_nonzero(pred_mask)
+                        if mask_size > init_mask_size:
+                            init_mask_size = mask_size
+                            init_pose = kuka.get_current_pose()
+                        
+                        if kuka.sweeped:
+                            # move the robot to the initial position
+                            kuka.pose_publisher.publish(init_pose)
+                            while not kuka.destination_reached():
+                                rospy.sleep(0.5)
+                            initialized = True
+                            cv2.destroyAllWindows()
+                            # stop the sweep thread
+                            sweep_thread_instance.join(timeout=0)
+
+                            print('INITIALIZED')
+                            continue
+                        
+                        frame_with_mask = draw_mask(frame, pred_mask)
+                        cv2.imshow('Processed Frame', frame_with_mask)
+                        cv2.waitKey(1)
+                    else:
+                        
+                        kuka.follow_segmentation(frame, pred_mask, True)
 
                 
                 if frame_idx > 0 and start_time is not None:
@@ -922,19 +985,53 @@ def segment(kuka : KukaControl = None):
         torch.cuda.empty_cache()
         gc.collect()
 
+drawing = False
+mock_mask = None
+def mouse_callback(event, x, y, flags, param):
+    global drawing, mock_mask
+    draw_color = (255, 255, 255)  
+    size = 5
+    if event == cv2.EVENT_LBUTTONDOWN:
+        drawing = True
+        cv2.circle(mock_mask, (x, y), size, draw_color, -1)
+
+    elif event == cv2.EVENT_MOUSEMOVE:
+        if drawing:
+            cv2.circle(mock_mask, (x, y), size, draw_color, -1)
+
+    elif event == cv2.EVENT_LBUTTONUP:
+        drawing = False
+        cv2.circle(mock_mask, (x, y), size, draw_color, -1)
 
 def main():
-
     kuka = KukaControl()
     probe = UltrasoundProbe(length=0.215)       # 0.227
     rospy.init_node('kuka_control', anonymous=True)  # , disable_signals=True)
-    kuka.attach_probe(probe)
+    
+    # global mock_mask
+    # mock_mask = np.zeros((480, 640), dtype=np.uint8)
+    # win_name = 'Draw mask'
+    # cv2.namedWindow(win_name)
+    # cv2.setMouseCallback(win_name, mouse_callback)
+    # while True:
+    #     cv2.imshow(win_name, mock_mask)
+    #     if cv2.waitKey(1) & 0xFF == ord('q'):
+    #         break
+    # cv2.destroyAllWindows()
+    # tip = tip_mask(mock_mask, 'right')
 
-    # if kuka.get_current_pose() is None:
-    #     print('KUKA not connected, segmenting without moving the robot.')
-    #     segment()
-    # else:
-    #     segment(kuka)
+    # # draw the tip of the probe as red
+    # cv2.circle(mock_mask, (tip[1], tip[0]), 5, (255, 0, 0), -1)
+    # cv2.imshow('Tip of the probe', mock_mask)
+    # cv2.waitKey(0)
+
+
+    if kuka.get_current_pose() is None:
+        print('KUKA not connected, segmenting without moving the robot.')
+        segment()
+    else:
+        kuka.attach_probe(probe)
+        segment(kuka)
 
     
 
@@ -1008,7 +1105,7 @@ def main():
         # kuka.flange_dir_check(dist=0.03)
 
         # kuka.rotate_a7(angle=60)
-        kuka.sweep('y', 15)
+        # kuka.sweep('y', 10)
         # kuka.sweep_list('y', [-20, 30, -10])
         # kuka.rotate_a7(angle=-90)
 
