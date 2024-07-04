@@ -36,6 +36,13 @@ import time
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import threading
+import cactuss_infer as ci
+from cut.data.base_dataset import get_transform
+
+CACTUSS = False
+cactuss=ci.CACTUSS()
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 bridge = CvBridge()
 image_received = False
@@ -46,7 +53,6 @@ INIT_FORCE = 5
 STIFFNESS = 500     # default: 500
 NR_LAST_POS = 1  # average the last X positions
 THRESHOLD = 5
-
 
 # SIZE = 256
 # Cephasonics img size in mm: 650px x 650px
@@ -824,6 +830,22 @@ def tip_mask(pred_mask, dir = 'right'):
 #         print("============ Press `Enter` to continue ...")
 #         input()
 
+def cactuss_infer_online(frame):
+    H, W = frame.shape[:2]
+    with torch.no_grad():
+        rgbimg = frame.copy()
+        # ndarray to PIL image
+        rgbimg = Image.fromarray(rgbimg)
+        transform = get_transform(cactuss.cut_opt)
+        A = transform(rgbimg).to(device)
+        B = transform(cactuss.real_B).to(device)
+        A = torch.unsqueeze(A, 0)
+        data = {'A': A, 'B': B, 'A_paths': None, 'B_paths': None}
+        output_cut = ci.tensor2numpy(cactuss.infer_cut_net(data))
+        output_cut = cv2.resize(output_cut, (W, H), interpolation=cv2.INTER_NEAREST)
+    return output_cut
+    
+
 def segment(kuka : KukaControl = None):
     def sweep_thread():
         while not rospy.is_shutdown():
@@ -838,9 +860,6 @@ def segment(kuka : KukaControl = None):
         kuka.pose_publisher.publish(pose)
         while not kuka.destination_reached():
             rospy.sleep(0.5)
-        
-
-            
 
     if kuka is not None:
         # print('##################################set_force_mode############################################')
@@ -909,6 +928,9 @@ def segment(kuka : KukaControl = None):
             if image_received:
                 frame = cv_image
                 frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+                if CACTUSS:
+                    frame = cactuss_infer_online(frame)
+                    
                 if frame_idx == 0:
                     # Select the initial bbox
                     roi = cv2.selectROI("ROI selector", frame, fromCenter=False, showCrosshair=True)
@@ -941,8 +963,11 @@ def segment(kuka : KukaControl = None):
 
                 # calculate com of mask to the frame
                 global com_mask_stack
-                # com_mask_stack.append(centers_of_mass_mask(pred_mask))
-                com_mask_stack.append(tip_mask(pred_mask, 'right'))
+                if pred_mask is not None:
+                    # com_mask_stack.append(centers_of_mass_mask(pred_mask))
+                    com_mask_stack.append(tip_mask(pred_mask, 'right'))
+                else:
+                    com_mask_stack.append(com_mask_stack[-1])
                 
                 # print('Catheter Center of Mass: ', com_mask, end='\n')
                 if kuka is None:
@@ -986,7 +1011,11 @@ def segment(kuka : KukaControl = None):
                         if pred_mask is not None:
                             threading.Thread(target=follow_segmentation_thread, args=(kuka, frame, pred_mask)).start()
 
-                frame_with_mask = draw_mask(frame, pred_mask)
+                # frame_with_mask = draw_mask(frame, pred_mask)
+                if CACTUSS:
+                    frame_with_mask = draw_mask(cv2.cvtColor(cv_image,cv2.COLOR_BGR2RGB), pred_mask)
+                else:
+                    frame_with_mask = draw_mask(frame, pred_mask)
                 #show the com
                 cv2.circle(frame_with_mask, (com_mask_stack[-1][0], com_mask_stack[-1][1]), 5, (0, 255, 0), -1)
                 cv2.imshow('Processed Frame', frame_with_mask)
