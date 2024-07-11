@@ -18,7 +18,9 @@ from cut.models import create_model
 from cut.data import create_dataset
 from cut.data.base_dataset import get_transform
 
-CUT_CKPT_DIR = './ckpt'
+# CUT_CKPT_DIR = './ckpt'
+# CUT_CKPT_DIR = '/home/steven_kuang/Documents/GR/cactuss/cut/checkpoints/transverse_aorta'
+CUT_CKPT_DIR = '/media/steven_kuang/My Passport/Work/Cactuss_models/transverse_aorta_230_nocath'
 DATAROOT_CUT = './cut/datasets/aorta_for_val'
 
 try:
@@ -66,8 +68,6 @@ class CACTUSS:
         self.real_B = cv2.imread(self.b_paths)
         self.real_B = pil.fromarray(self.real_B)
 
-        # self.seg_sim_model = self.load_seg_net()
-
     def load_cut(self):
         opt = TestOptions().parse()  # get test options
         opt.dataroot = DATAROOT_CUT
@@ -102,21 +102,6 @@ class CACTUSS:
 
 
     def load_cut_net(self):
-
-       # print("Fetching pretrained model...")
-        #PRETRAINED_NET_D_GDRIVE_ID = '1G0G8Dkn167CP_zJNp3hzNASMfy4MT2ks'
-        #download_file_from_gdrive(PRETRAINED_NET_D_GDRIVE_ID, self.opt.checkpoints_dir + '/pretrained_net_D.pth')
-        #download_file_from_gdrive(PRETRAINED_NET_D_GDRIVE_ID, self.opt.checkpoints_dir + '/73620-29_net_D.pth')
-
-        #PRETRAINED_NET_G_GDRIVE_ID = '1LEwjzkBXq4gO-_46hrSlvl7i0ECr9u66'
-        #download_file_from_gdrive(PRETRAINED_NET_G_GDRIVE_ID, self.opt.checkpoints_dir + '/pretrained_net_G.pth')
-        #download_file_from_gdrive(PRETRAINED_NET_G_GDRIVE_ID, self.opt.checkpoints_dir + '/73620-29_net_G.pth')
-
-
-        #ckpt = glob(self.opt.checkpoints_dir + '/*.pth')
-        #self.opt.epoch = ckpt[0].split("/")[-1].split("_")[0]
-        #print("cutnet ckpt",ckpt)
-
         cut_model = create_model(self.opt)
         cut_model.setup(self.opt)
         cut_model.device='cuda:0'

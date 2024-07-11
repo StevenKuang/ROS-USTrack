@@ -1,46 +1,67 @@
 #!/usr/bin/env python3
+
+# ROS-related imports
 import rospy
-import std_msgs.msg
-from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import JointState
-from iiwa_msgs.msg import JointPosition, CartesianPose, JointVelocity
-from iiwa_msgs.msg import *
-from iiwa_python import *
 import message_filters
+from std_msgs.msg import Time, std_msgs
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import JointState, Image as ROSImage
+from iiwa_msgs.msg import JointPosition, CartesianPose, JointVelocity
+
+# System and OS-related imports
 import sys
 import os
-
-sys.path.append(os.getcwd())
-from setup_control_mode import set_force_mode, set_position_control_mode
-from skimage.measure import label
-from std_msgs.msg import Time
-
-import cv2
-import rospy
-from PIL import Image 
-from sensor_msgs.msg import Image as ROSImage
-from cv_bridge import CvBridge, CvBridgeError
-from SegTracker import SegTracker
-from model_args import aot_args,sam_args,segtracker_args
-from aot_tracker import _palette
-import numpy as np
-import torch
-from scipy.ndimage import binary_dilation
-import gc
-from tf.transformations import quaternion_matrix, quaternion_about_axis, quaternion_multiply, quaternion_conjugate, quaternion_from_matrix
-
 import subprocess
 import platform
 import time
 
+# Image processing and computer vision imports
+import cv2
+from skimage.measure import label
+from PIL import Image 
+from cv_bridge import CvBridge, CvBridgeError
+
+# Segmentation and tracking imports
+from SegTracker import SegTracker
+from model_args import aot_args, sam_args, segtracker_args
+from aot_tracker import _palette
+
+# Scientific computing imports
+import numpy as np
+import torch
+from scipy.ndimage import binary_dilation
+from scipy.spatial.transform import Rotation as R
+import gc
+
+# Transformation imports
+from tf.transformations import (
+    quaternion_matrix, quaternion_about_axis, quaternion_multiply,
+    quaternion_conjugate, quaternion_from_matrix
+)
+
+# Visualization imports
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+
+# Threading imports
 import threading
+data_lock = threading.Lock()
+
+# Custom imports
+from iiwa_python import *
+from setup_control_mode import set_force_mode, set_position_control_mode
 import cactuss_infer as ci
 from cut.data.base_dataset import get_transform
 
+# Ensure current working directory is in sys.path
+sys.path.append(os.getcwd())
+
+
 CACTUSS = False
-cactuss=ci.CACTUSS()
+if CACTUSS:
+    cactuss=ci.CACTUSS()
+else:
+    cactuss=None
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -68,21 +89,6 @@ MM2M = 0.001
 STEP_SIZE = 0.05  # 2cm
 # STEP_SIZE = 0.05  # 5cm
 
-
-def ping(host):
-    """
-    Returns True if host (str) responds to a ping request.
-    Remember that a host may not respond to a ping (ICMP) request even if the host name is valid.
-    """
-
-    # Option for the number of packets as a function of
-    param = '-n' if platform.system().lower()=='windows' else '-c'
-
-    # Building the command. Ex: "ping -c 1 google.com"
-    command = ['ping', param, '1', host]
-
-    return subprocess.call(command) == 0
-
 class UltrasoundProbe:
     def __init__(self, length, probe_type='linear', kuka_pose=None):
         self.length = length
@@ -93,23 +99,39 @@ class UltrasoundProbe:
         else:
             self.position, self.orientation, [self.x_dir, self.y_dir, self.z_dir] = self.flange_to_probe(kuka_pose)
 
+    # def flange_to_probe(self, kuka_pose):
+    #     flange_position = np.array([kuka_pose.pose.position.x, kuka_pose.pose.position.y, kuka_pose.pose.position.z])
+    #     flange_orientation = np.array([kuka_pose.pose.orientation.x, kuka_pose.pose.orientation.y, kuka_pose.pose.orientation.z, kuka_pose.pose.orientation.w])
+    #     # z_dir from the flange orientation
+    #     z_dir = quaternion_matrix(flange_orientation)[:3, 2]
+    #     position = flange_position + self.length * z_dir
+    #     dir_vecs = [quaternion_matrix(flange_orientation)[:3, i] for i in range(3)]
+    #     return position, flange_orientation, dir_vecs
+
     def flange_to_probe(self, kuka_pose):
+        # Optimized for speed   
         flange_position = np.array([kuka_pose.pose.position.x, kuka_pose.pose.position.y, kuka_pose.pose.position.z])
         flange_orientation = np.array([kuka_pose.pose.orientation.x, kuka_pose.pose.orientation.y, kuka_pose.pose.orientation.z, kuka_pose.pose.orientation.w])
-        # z_dir from the flange orientation
-        z_dir = quaternion_matrix(flange_orientation)[:3, 2]
-        position = flange_position + self.length * z_dir
-        dir_vecs = [quaternion_matrix(flange_orientation)[:3, i] for i in range(3)]
+        # Create a rotation object from the quaternion matrix
+        rotation_matrix = R.from_quat(flange_orientation).as_matrix()
+        # Compute the position of the probe with z_dir
+        position = flange_position + self.length * rotation_matrix[:3, 2]
+        # Extract the direction vectors
+        dir_vecs = rotation_matrix[:, :3].T 
         return position, flange_orientation, dir_vecs
 
     def update_probe(self, kuka_pose):
         self.position, self.orientation, [self.x_dir, self.y_dir, self.z_dir] = self.flange_to_probe(kuka_pose)
+
+    def get_probe_directions(self):
+        return [self.x_dir, self.y_dir, self.z_dir]
 
 class KukaControl:
 
     def __init__(self):
         self.joint_publisher = rospy.Publisher('/iiwa/command/JointPosition', JointPosition, queue_size=20)
         self.pose_publisher = rospy.Publisher('/iiwa/command/CartesianPoseLin', PoseStamped, queue_size=20)
+        self.cartesian_pose_sub = rospy.Subscriber('/iiwa/state/CartesianPose', CartesianPose, self.pose_callback)
         self.image_pub_seg_stable = rospy.Publisher("/imfusion/sim_seg_s", ROSImage, queue_size=1)
 
         self.bridge = CvBridge()
@@ -117,22 +139,36 @@ class KukaControl:
         self.aorta_gt = {"gt_x": 0, "gt_y": 0}
 
         self.aorta_stats_arr = []
-        self.init = True
+        self.init_steps = {
+            "x": False,
+            "y": False,
+            "a7": False
+        }
         self.step = 0
 
         self.connected = False
         self.probe = UltrasoundProbe(0.2)
         self.sweeped = False
+        self.target_pose = None
+
+        self.current_cartesian_pose = None
+        self.destination_reached_counter = 0
+
 
     def attach_probe(self, probe):
         self.probe = probe
-        self.probe.update_probe(self.get_current_pose())
+        self.probe.update_probe(self.current_cartesian_pose)
+
+    def pose_callback(self, data):
+        self.current_cartesian_pose = data.poseStamped
+        self.probe.update_probe(data.poseStamped)
 
     def get_current_pose(self):
         try:
             current_pose = rospy.wait_for_message('/iiwa/state/CartesianPose', CartesianPose, timeout=2)
             if current_pose is None:
                 raise rospy.ROSException('No pose from /iiwa/state/CartesianPose received')
+
             self.connected = True
             return current_pose.poseStamped
         # print('CURRENT POSE: ', current_pose.poseStamped)
@@ -144,6 +180,23 @@ class KukaControl:
     def destination_reached(self):
         reached = rospy.wait_for_message('/iiwa/state/DestinationReached', Time)
         return reached
+
+    def probe_length_calibration(self, axis = 'y'):
+        errs = []
+        length_base = 0.225
+        length_1 = 0.001
+        # length_2 = 0.001
+        # old_probe = self.probe
+        # do a grid search
+        for i in range(10):
+            probe = UltrasoundProbe(length=length_base + i * length_1)
+            self.attach_probe(probe)
+            errs.append(self.sweep(axis, 10))
+        
+        self.attach_probe(UltrasoundProbe(length=length_base + errs.index(min(errs)) * length_1))
+        print('Errors: ', errs)
+        print("Min error: ", min(errs))
+        print("Min error length: ", length_base + errs.index(min(errs)) * length_1)
 
     def get_a7_velocity(self):
         velocities = rospy.wait_for_message('/iiwa/state/JointVelocity', JointVelocity, timeout=2)
@@ -163,6 +216,7 @@ class KukaControl:
         self.joint_publisher.publish(joint_state)
         while not self.destination_reached():
             rospy.sleep(0.5)
+        self.destination_reached_counter += 1
 
     def rotate_a7(self, angle=90):
         joint_state = rospy.wait_for_message('/iiwa/state/JointPosition', JointPosition, timeout=2)
@@ -233,21 +287,21 @@ class KukaControl:
         return np.linalg.norm(end_vec - start_vec)
 
     def move_forward(self):
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose
         # current_pose.pose.position.z = current_pose.pose.position.z - 0.2  # 20cm for tool
         current_pose.pose.position.x = current_pose.pose.position.x - STEP_SIZE     
         self.pose_publisher.publish(current_pose)
     
     def move_flange_with_dir_retention(self, direction, dist, current_pose=None):
         if current_pose is None:
-            current_pose = self.get_current_pose()
+            current_pose = self.current_cartesian_pose
         current_pose.pose.position.x = current_pose.pose.position.x + direction[0] * dist
         current_pose.pose.position.y = current_pose.pose.position.y + direction[1] * dist
         current_pose.pose.position.z = current_pose.pose.position.z + direction[2] * dist
         self.pose_publisher.publish(current_pose)
         while not self.destination_reached():
             rospy.sleep(0.5)
-        self.probe.update_probe(current_pose)
+        self.destination_reached_counter += 1
 
     def rotate(self, axis='y', angle=30):
         '''
@@ -257,11 +311,11 @@ class KukaControl:
         use positive angle for clockwise rotation
         '''
         # Get current pose
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose
         print('CURRENT POSE: \n', current_pose.pose)
         # Extract the current orientation as a quaternion
         current_orientation = current_pose.pose.orientation
-        x_dir, y_dir, z_dir = self.get_flange_directions(current_pose)
+        [x_dir, y_dir, z_dir] = self.get_flange_directions(current_pose)
         current_quaternion = [current_orientation.x, current_orientation.y, current_orientation.z, current_orientation.w]
 
         # Define the rotation quaternion based on the axis and angle
@@ -291,10 +345,11 @@ class KukaControl:
 
         while not self.destination_reached():
             rospy.sleep(0.5)
+        self.destination_reached_counter += 1
 
-    def tilt(self, axis='y', angle=10):
+    def tilt(self, axis='y', angle=10, additional_depth=0.0):
         '''
-        Tilt the flange in a circular motion
+        Tilt the probe in a circular motion
         Use the current pose as the start of the tilt,
         the move [angle] degrees to the left and right
         radius is the distance from the flange to the tip of the probe
@@ -302,8 +357,7 @@ class KukaControl:
         '''
 
         # Get current pose
-        current_pose = self.get_current_pose()
-        self.probe.update_probe(current_pose)
+        current_pose = self.current_cartesian_pose
         # print('CURRENT POSE: \n', current_pose.pose)
         # print('--------------------------------------\n')
         # print('PROBE DIRECTIONS: \n', self.probe.x_dir, self.probe.y_dir, self.probe.z_dir)
@@ -320,15 +374,27 @@ class KukaControl:
         else:
             raise ValueError("Axis must be 'x' or 'y'")
         
-        rotated_probe_tip_position = quaternion_matrix(rotation_quaternion)[:3, :3].dot(self.probe.length * np.array(self.probe.z_dir)) + flange_tip_position
+        probe_length = self.probe.length + additional_depth
+        rotated_probe_tip_position = quaternion_matrix(rotation_quaternion)[:3, :3].dot(probe_length * np.array(self.probe.z_dir)) + flange_tip_position
 
         new_z_dir = rotated_probe_tip_position - flange_tip_position
         new_z_dir = new_z_dir / np.linalg.norm(new_z_dir)
-        new_position = self.probe.position - (new_z_dir * self.probe.length)
-
-        new_y_dir = self.probe.y_dir
-        new_x_dir = np.cross(new_y_dir, new_z_dir)
-        new_x_dir = new_x_dir / np.linalg.norm(new_x_dir)
+        if additional_depth != 0.0:
+            old_probe_position = flange_tip_position + (self.probe.z_dir * probe_length)
+            new_position = old_probe_position - (new_z_dir * probe_length)
+        else:
+            new_position = self.probe.position - (new_z_dir * probe_length)
+        
+        if axis == 'x':
+            new_x_dir = self.probe.x_dir
+            new_y_dir = np.cross(new_z_dir, new_x_dir)
+            new_y_dir = new_y_dir / np.linalg.norm(new_y_dir)
+        elif axis == 'y':
+            new_y_dir = self.probe.y_dir
+            new_x_dir = np.cross(new_y_dir, new_z_dir)
+            new_x_dir = new_x_dir / np.linalg.norm(new_x_dir)
+        else:
+            raise ValueError("Axis must be 'x' or 'y'")
 
         new_transformation_matrix = np.eye(4)
         new_transformation_matrix[:3, 0] = new_x_dir
@@ -360,11 +426,11 @@ class KukaControl:
         # # Plotting the old and new z_dir vectors
         
         # ax.quiver(flange_tip_position[0], flange_tip_position[1], flange_tip_position[2], 
-        #         self.probe.z_dir[0], self.probe.z_dir[1], self.probe.z_dir[2], color='black', length=self.probe.length, normalize=False)
+        #         self.probe.z_dir[0], self.probe.z_dir[1], self.probe.z_dir[2], color='black', length=probe_length, normalize=False)
         # ax.quiver(flange_tip_position[0], flange_tip_position[1], flange_tip_position[2], 
-        #         new_z_dir[0], new_z_dir[1], new_z_dir[2], color='cyan', length=self.probe.length, normalize=False)
+        #         new_z_dir[0], new_z_dir[1], new_z_dir[2], color='cyan', length=probe_length, normalize=False)
         # ax.quiver(new_position[0], new_position[1], new_position[2],
-        #         new_z_dir[0], new_z_dir[1], new_z_dir[2], color='cyan', length=self.probe.length, normalize=False)
+        #         new_z_dir[0], new_z_dir[1], new_z_dir[2], color='cyan', length=probe_length, normalize=False)
         
         # # plot flange directions
         # ax.quiver(self.probe.position[0], self.probe.position[1], self.probe.position[2], 
@@ -390,6 +456,7 @@ class KukaControl:
         # ax.set_ylabel('Y')
         # ax.set_zlabel('Z')
         # # keep the scale the same
+        # ax.set_box_aspect([1,1,1])
         
 
         # plt.title('3D Positions')
@@ -410,8 +477,7 @@ class KukaControl:
         # print('--------------------------------------\n')
         while not self.destination_reached():
             rospy.sleep(0.5)
-        
-        self.probe.update_probe(self.get_current_pose())
+        self.destination_reached_counter += 1
 
     def sweep(self, axis: str = 'y', angle: int = 15) -> float:
         '''
@@ -438,17 +504,17 @@ class KukaControl:
         print('Avg diff: ', np.mean(diffs))
         return np.mean(diffs)
 
-    def sweep_list(self, axis: str = 'y', angles: [int] = [15, 30, 45]) -> float:
+    def sweep_list(self, axis: str = 'y', angles: [int] = [15, 30, 45], additional_depth: float = 0.0) -> float:
         '''
         Sweep the probe in a circular motion acoording to the angles list
         positive angles are counter clockwise
         '''
         probe_pos = [self.probe.position]
         for angle in angles:
-            self.tilt(axis, angle)
+            self.tilt(axis, angle, additional_depth)
             probe_pos.append(self.probe.position)
 
-        self.sweeped = True
+        # self.sweeped = True
         diffs = [np.linalg.norm(probe_pos[i] - probe_pos[0]) for i in range(1, len(angles) + 1)]
         print('DIFFS: ', diffs)
         print('Avg diff: ', np.mean(diffs))
@@ -456,7 +522,7 @@ class KukaControl:
 
     def flange_dir_check(self, dist=0.05):
         sleep_time = 0.5
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         center_pose = current_pose
         print('CURRENT POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
@@ -465,7 +531,7 @@ class KukaControl:
         print('--------------------------------------\n')
         print('moving in +X flange direction ('+ str(current_dirs[0]) +') for '+ str(100*dist) + ' cm: ')
         self.move_flange_with_dir_retention(current_dirs[0], dist)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -473,7 +539,7 @@ class KukaControl:
 
         print('moving in -X flange direction ('+ str(current_dirs[0]) +') for '+ str(100*dist) + ' cm: ')
         self.move_flange_with_dir_retention(-current_dirs[0], dist)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -481,7 +547,7 @@ class KukaControl:
         print('--------------------------------------\n')
         print('moving in +Y flange direction ('+ str(current_dirs[1]) +') for '+ str(100*dist) + ' cm: ')
         self.move_flange_with_dir_retention(current_dirs[1], dist)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -489,7 +555,7 @@ class KukaControl:
         print('\n')
         print('moving in -Y flange direction ('+ str(current_dirs[1]) +') for '+ str(100*dist) + ' cm: ')
         self.move_flange_with_dir_retention(-current_dirs[1], dist)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -497,7 +563,7 @@ class KukaControl:
         print('--------------------------------------\n')
         print('moving in +Z flange direction ('+ str(current_dirs[2]) +') for '+ str(100*dist) + ' cm: ')
         self.move_flange_with_dir_retention(current_dirs[2], dist)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -505,14 +571,14 @@ class KukaControl:
         print('\n')
         print('moving in -Z flange direction ('+ str(current_dirs[2]) +') for '+ str(100*dist) + ' cm: ')
         self.move_flange_with_dir_retention(-current_dirs[2], dist)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
 
     def world_dir_check(self, dist=0.05):
         sleep_time = 0.5
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         center_pose = current_pose
         print('CURRENT POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
@@ -526,7 +592,7 @@ class KukaControl:
         # sleep till the kuka.destination_reached() is True
         while not self.destination_reached():
             rospy.sleep(sleep_time)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -537,7 +603,7 @@ class KukaControl:
         self.pose_publisher.publish(current_pose)
         while not self.destination_reached():
             rospy.sleep(sleep_time)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -549,7 +615,7 @@ class KukaControl:
         self.pose_publisher.publish(current_pose)
         while not self.destination_reached():
             rospy.sleep(sleep_time)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -561,7 +627,7 @@ class KukaControl:
         self.pose_publisher.publish(current_pose)
         while not self.destination_reached():
             rospy.sleep(sleep_time)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -573,7 +639,7 @@ class KukaControl:
         self.pose_publisher.publish(current_pose)
         while not self.destination_reached():
             rospy.sleep(sleep_time)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -585,7 +651,7 @@ class KukaControl:
         self.pose_publisher.publish(current_pose)
         while not self.destination_reached():
             rospy.sleep(sleep_time)
-        current_pose = self.get_current_pose()
+        current_pose = self.current_cartesian_pose 
         print('END POSE: \n', current_pose.pose.position)
         current_dirs = self.get_flange_directions(current_pose)
         print('END DIRECTIONS: \n', current_dirs)
@@ -597,7 +663,7 @@ class KukaControl:
         print('2. XZ plane')
         print('3. YZ plane')
         plane = int(input())
-        center_pose = self.get_current_pose()
+        center_pose = self.current_cartesian_pose 
         num_points = 100  # Sparsely define the circle
         angle_step = 2 * math.pi / num_points  # radians
         sleep_time = 8  
@@ -608,7 +674,7 @@ class KukaControl:
             else:
                 sleep_time = 2
             angle = i * angle_step
-            new_pose = self.get_current_pose()
+            new_pose = self.current_cartesian_pose 
             
             if plane == 1:  # XY
                 new_pose.pose.position.x = center_pose.pose.position.x + radius * math.cos(angle)
@@ -635,7 +701,7 @@ class KukaControl:
             while not self.destination_reached():
                 rate.sleep(0.5)
             
-            current_pose = self.get_current_pose()
+            current_pose = self.current_cartesian_pose 
             print('END POSE: \n', current_pose.pose.position)
 
         # return to the initial position
@@ -651,13 +717,13 @@ class KukaControl:
         print('############ MOVING FROM A TO B ############')
         print('Please use hand guidance mode to move the robot to the END POSITION and press Enter.')
         input()
-        end_pose = self.get_current_pose()
+        end_pose = self.current_cartesian_pose 
         # print('END POSE: \n', end_pose.pose.position)
         print('END POINT registered.')
         print('###############################################')
         print('Please use hand guidance mode to move the robot to the START POSITION and press Enter.')
         input()
-        start_pose = self.get_current_pose()
+        start_pose = self.current_cartesian_pose 
         # print('START POSE: \n', start_pose.pose.position)
         print('START POINT registered.')
         print('###############################################')
@@ -666,23 +732,22 @@ class KukaControl:
         self.pose_publisher.publish(end_pose)
         while not self.destination_reached():
             rospy.sleep(0.5)
+        self.destination_reached_counter += 1
         print('END POSE: \n', end_pose.pose.position)
         print('###############################################')
 
     def move_point(self, u1, v1, u2, v2):
         # when probe is mounted in a transversal position, moving the x_dir of the probe 
         # will shift the image plane, thus we first consider y_dir and z_dir
-        current_pose = self.get_current_pose()
-        current_dirs = self.get_flange_directions(current_pose)
         y_dist = (u2 - u1) * LAMBDA_Y * MM2M
         z_dist = (v2 - v1) * LAMBDA_X * MM2M
         
-        combined_dir = y_dist * current_dirs[1] + z_dist * -current_dirs[2]     # z_dir is inverted
+        combined_dir = y_dist * self.probe.y_dir + z_dist * -self.probe.z_dir     # z_dir is inverted
         # normalize the combined direction
         combined_dist = np.linalg.norm(combined_dir)
         combined_dir = combined_dir / combined_dist
 
-        self.move_flange_with_dir_retention(combined_dir, combined_dist, current_pose)
+        self.move_flange_with_dir_retention(combined_dir, combined_dist)
 
     def follow_segmentation(self, frame, pred_mask, grace = False):
         global com_mask_stack
@@ -822,20 +887,11 @@ def tip_mask(pred_mask, dir = 'right'):
 
     return np.array([tip_x, tip_y])
 
-# def initialize_then_segment(kuka : KukaControl = None):
-#     if kuka is not None:
-#         # set position mode 
-#         print('##################################set_position_control_mode############################################')
-#         set_position_control_mode()
-#         print("============ Press `Enter` to continue ...")
-#         input()
-
 def cactuss_infer_online(frame):
     H, W = frame.shape[:2]
     with torch.no_grad():
-        rgbimg = frame.copy()
         # ndarray to PIL image
-        rgbimg = Image.fromarray(rgbimg)
+        rgbimg = Image.fromarray(frame.copy())
         transform = get_transform(cactuss.cut_opt)
         A = transform(rgbimg).to(device)
         B = transform(cactuss.real_B).to(device)
@@ -844,22 +900,74 @@ def cactuss_infer_online(frame):
         output_cut = ci.tensor2numpy(cactuss.infer_cut_net(data))
         output_cut = cv2.resize(output_cut, (W, H), interpolation=cv2.INTER_NEAREST)
     return output_cut
-    
 
 def segment(kuka : KukaControl = None):
-    def sweep_thread():
-        while not rospy.is_shutdown():
-            finished = kuka.sweep_list('y', [5,-10])
-            if finished:
-                break
+    def init_check_thread(kuka, com, data_lock):
+        catheter_depth = kuka.px2m(com[1])
+        kuka.move_point(com[0], com[1], W//2, 3 * H//4)
+        kuka.init_steps['a7'] = True
+        kuka.rotate_a7(angle=30)
+        kuka.rotate_a7(angle=-60)
+        
+        # wait here until kuka.init_steps['a7'] is False
+        while kuka.init_steps['a7']:
+            time.sleep(0.5)
+
+        if kuka.target_pose is not None:
+            print('Go to final a7')
+            kuka.pose_publisher.publish(kuka.target_pose)
+            while not kuka.destination_reached():
+                rospy.sleep(0.5)
+            with data_lock:
+                kuka.destination_reached_counter += 1
+            kuka.target_pose = None
+            print('Reached final a7')
+        kuka.rotate_a7(angle=-90)
+        # time.sleep(2)
+        kuka.init_steps['x'] = True
+        kuka.sweep_list('x', [15, -30], 0.06)
+        
+        while kuka.init_steps['x']:
+            time.sleep(0.5)
+
+        if kuka.target_pose is not None:
+            print('Go to final x')
+            kuka.pose_publisher.publish(kuka.target_pose)
+            while not kuka.destination_reached():
+                rospy.sleep(0.5)
+            with data_lock:
+                kuka.destination_reached_counter += 1
+            kuka.target_pose = None
+            print('Reached final x')
+
+        kuka.init_steps['y'] = True
+        kuka.sweep_list('y', [10, -20], 0.06)
+        while kuka.init_steps['y']:
+            time.sleep(0.5)
+
+        if kuka.target_pose is not None:
+            print('Go to final y')
+            kuka.pose_publisher.publish(kuka.target_pose)
+            while not kuka.destination_reached():
+                rospy.sleep(0.5)
+            with data_lock:
+                kuka.destination_reached_counter += 1
+            kuka.target_pose = None
+            print('Reached final y')
+
+        with data_lock:
+            kuka.sweeped = True
+
     
     def follow_segmentation_thread(kuka, cv_image, pred_mask):
         kuka.follow_segmentation(cv_image, pred_mask, grace=True)
 
-    def move_to_pose_thread(kuka, pose):
+    def move_to_pose_thread(kuka, pose, data_lock):
         kuka.pose_publisher.publish(pose)
         while not kuka.destination_reached():
             rospy.sleep(0.5)
+        with data_lock:
+            kuka.destination_reached_counter += 1
 
     if kuka is not None:
         # print('##################################set_force_mode############################################')
@@ -903,7 +1011,7 @@ def segment(kuka : KukaControl = None):
     segtracker_args = {
     'sam_gap': 99999,
     'min_area': 200,
-    'max_obj_num': 32,
+    'max_obj_num': 4,
     'min_new_obj_iou': 0.8,
     }
 
@@ -916,11 +1024,15 @@ def segment(kuka : KukaControl = None):
     sam_gap = segtracker_args['sam_gap']
 
     start_time = None
-    initialized = False
     init_mask_size = 0
+    max_total_brightness = 0
+    max_brightness_per_pixel = 0
     init_pose = None
+    if kuka is not None:
+        start_reached_counter = kuka.destination_reached_counter
+    best_frame = None
+    best_pred_mask = None
 
-    
     first_sweep = False
     initialized = False
     with torch.cuda.amp.autocast():
@@ -928,6 +1040,8 @@ def segment(kuka : KukaControl = None):
             if image_received:
                 frame = cv_image
                 frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+                if kuka is not None:
+                    kuka_pose = kuka.current_cartesian_pose 
                 if CACTUSS:
                     frame = cactuss_infer_online(frame)
                     
@@ -945,6 +1059,7 @@ def segment(kuka : KukaControl = None):
                     gc.collect()
                     segtracker.add_reference(frame, pred_mask)
 
+                    init_mask_size = np.count_nonzero(pred_mask)
                     start_time = time.time()    # ignore the first frame when calculating the FPS
 
                 elif (frame_idx % sam_gap) == 0:
@@ -961,7 +1076,6 @@ def segment(kuka : KukaControl = None):
                 torch.cuda.empty_cache()
                 gc.collect()
 
-                # calculate com of mask to the frame
                 global com_mask_stack
                 if pred_mask is not None:
                     # com_mask_stack.append(centers_of_mass_mask(pred_mask))
@@ -969,7 +1083,6 @@ def segment(kuka : KukaControl = None):
                 else:
                     com_mask_stack.append(com_mask_stack[-1])
                 
-                # print('Catheter Center of Mass: ', com_mask, end='\n')
                 if kuka is None:
                     frame_with_mask = draw_mask(frame, pred_mask)
                     # Display the processed frame with segmentation mask
@@ -989,30 +1102,93 @@ def segment(kuka : KukaControl = None):
                 else:
                     if pred_mask is None:
                         continue
-                    print('Catheter Center of Mass: ', com_mask_stack[-1], end='\n')
+                    # threading.Thread(target=follow_segmentation_thread, args=(kuka, frame, pred_mask)).start()
+                    # print('Catheter Center of Mass: ', com_mask_stack[-1], end='\n')
                     if not initialized:
                         if not first_sweep:
-                            threading.Thread(target=sweep_thread).start()
+                            com = centers_of_mass_mask(pred_mask)
+                            init_thread = threading.Thread(target=init_check_thread, args=(kuka, com, data_lock))
+                            init_thread.start()
                             first_sweep = True
 
+                        # mask frame with the mask, only keep the pixels in the maskm rest is black
+                        grayscale_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        grayscale_masked_frame = cv2.bitwise_and(grayscale_frame, grayscale_frame, mask=pred_mask)
+
                         mask_size = np.count_nonzero(pred_mask)
-                        if mask_size > init_mask_size:
-                            init_mask_size = mask_size
-                            init_pose = kuka.get_current_pose()
+                        total_brightness = np.sum(grayscale_masked_frame)
+                        brightness_per_pixel = total_brightness / mask_size
                         
-                        if kuka.sweeped:
-                            # move the robot to the initial position
-                            threading.Thread(target=move_to_pose_thread, args=(kuka, init_pose)).start()
-                            initialized = True
-                            print('INITIALIZED')
-                            continue
+                        if kuka.init_steps['a7']:
+                            if brightness_per_pixel > max_brightness_per_pixel:
+                                max_brightness_per_pixel = brightness_per_pixel
+                                init_pose = kuka_pose
+                                init_mask_size = mask_size
+                                best_frame = frame
+                                best_pred_mask = pred_mask
+                        else:
+                            if total_brightness > max_total_brightness:
+                                max_total_brightness = total_brightness
+                                init_pose = kuka_pose
+                                init_mask_size = mask_size
+                                best_frame = frame
+                                best_pred_mask = pred_mask
+
+                        # if mask_size > init_mask_size:
+                        #     init_mask_size = mask_size
+                        #     init_pose = kuka_pose
+                        
+                        with data_lock:
+                            if kuka.init_steps['a7'] and kuka.destination_reached_counter - start_reached_counter == 3:
+                                print('Enter a7 if\n')
+                                kuka.target_pose = init_pose
+                                kuka.init_steps['a7'] = False
+                                max_total_brightness = 0
+
+                                segtracker.restart_tracker()
+                                segtracker.add_reference(best_frame, best_pred_mask)
+                                segtracker.first_frame_mask = best_pred_mask
+
+                                start_reached_counter = kuka.destination_reached_counter
+                                cv2.imshow('Best a7 Frame', draw_mask(best_frame, best_pred_mask))
+
+                            if kuka.init_steps['x'] and kuka.destination_reached_counter - start_reached_counter == 4:
+                                print('Enter x if\n')
+                                kuka.target_pose = init_pose
+                                kuka.init_steps['x'] = False
+                                max_total_brightness = 0
+                                
+                                segtracker.restart_tracker()
+                                segtracker.add_reference(best_frame, best_pred_mask)
+                                segtracker.first_frame_mask = best_pred_mask
+
+                                start_reached_counter = kuka.destination_reached_counter
+                                cv2.imshow('Best x Frame', draw_mask(best_frame, best_pred_mask))
+
+                            if kuka.init_steps['y'] and kuka.destination_reached_counter - start_reached_counter == 3:
+                                kuka.target_pose = init_pose
+                                print('Enter sweep if\n')
+                                initialized = True
+                                kuka.init_steps['y'] = False
+
+                                segtracker.restart_tracker()
+                                segtracker.add_reference(best_frame, best_pred_mask)
+                                segtracker.first_frame_mask = best_pred_mask
+
+                                print('INITIALIZED')
+                                cv2.imshow('Best y Frame', draw_mask(best_frame, best_pred_mask))
+                                continue
                         
                     else:
+                        # do nothing
+                        # pass
+                        
                         if pred_mask is not None:
                             threading.Thread(target=follow_segmentation_thread, args=(kuka, frame, pred_mask)).start()
 
                 # frame_with_mask = draw_mask(frame, pred_mask)
                 if CACTUSS:
+                    cv2.imshow('CACTUSS', draw_mask(frame, pred_mask))
                     frame_with_mask = draw_mask(cv2.cvtColor(cv_image,cv2.COLOR_BGR2RGB), pred_mask)
                 else:
                     frame_with_mask = draw_mask(frame, pred_mask)
@@ -1054,9 +1230,12 @@ def mouse_callback(event, x, y, flags, param):
         drawing = False
         cv2.circle(mock_mask, (x, y), size, draw_color, -1)
 
+
+
+
 def main():
     kuka = KukaControl()
-    probe = UltrasoundProbe(length=0.215)       # 0.227
+    probe = UltrasoundProbe(length=0.227)       # 0.227
     rospy.init_node('kuka_control', anonymous=True)  # , disable_signals=True)
     
     # global mock_mask
@@ -1076,7 +1255,7 @@ def main():
     # cv2.imshow('Tip of the probe', mock_mask)
     # cv2.waitKey(0)
 
-
+    # segment()
     if kuka.get_current_pose() is None:
         print('KUKA not connected, segmenting without moving the robot.')
         segment()
@@ -1119,47 +1298,31 @@ def main():
     print(rospy.get_namespace())
     # current_pose = kuka.get_current_pose()
     while not rospy.is_shutdown():
-        
-
-        """         
-        while True:
-            finished = False
-            kuka.init = True
-            save_last_n_pos = []
-            while not finished:
-                center_x_px, center_y_px, width, height, aorta_size, segm = kuka.run()
-                # print('save_last_n_pos: ', save_last_n_pos)
-                if len(save_last_n_pos) < NR_LAST_POS:
-                    save_last_n_pos.append((center_x_px, center_y_px))
-                else:
-                    print(' len(save_last_n_pos): ', len(save_last_n_pos))
-                    save_last_n_x_pos = [tuple[0] for tuple in save_last_n_pos]
-                    if np.std(save_last_n_x_pos) > THRESHOLD:
-                        save_last_n_pos.pop(0)
-                    else:
-                        finished = True
-                        segm = np.array(segm).astype('float32')
-                        kuka.image_pub_seg_stable.publish(kuka.bridge.cv2_to_imgmsg(segm))
-                        print('-------image_pub_seg_stable------')
-
-            print('####################### FINISHED ###############################')
-            print('save_last_n_pos: ', save_last_n_pos)
-
-            kuka.step += 1 
-        """
-            # input()   #print("============ Press `Enter` to move forward...")
-        # kuka.move_forward()
-
-        
+        kuka.attach_probe(probe)
         # kuka.world_dir_check(dist=0.03)
         # kuka.flange_dir_check(dist=0.03)
 
         # kuka.rotate_a7(angle=60)
         # kuka.sweep('y', 10)
         # kuka.sweep_list('y', [-20, 30, -10])
-        # kuka.rotate_a7(angle=-90)
+        kuka.rotate_a7(angle=90)
+        # kuka.rotate_a7(angle=-60)
+        # kuka.rotate_a7(angle=30)
 
-        
+        # catheter_depth = 0.045
+
+        # kuka.tilt('y', 5, catheter_depth)
+        # kuka.tilt('y', -10, catheter_depth)
+        # kuka.tilt('y', 5, catheter_depth)
+
+
+        # rep = 2
+        # kuka.move_flange_with_dir_retention(kuka.probe.x_dir, -0.02)
+        # for i in range(rep):
+        #     kuka.move_flange_with_dir_retention(kuka.probe.x_dir, -0.015, current_pose)
+        #     kuka.move_flange_with_dir_retention(kuka.probe.x_dir, +0.015, current_pose)
+        # kuka.move_flange_with_dir_retention(kuka.probe.x_dir, 0.002, current_pose)
+
         # kuka.rotate(angle=10, axis='y')
         # kuka.rotate(angle=-10, axis='y')
         # kuka.run()
