@@ -19,8 +19,8 @@ from cut.data import create_dataset
 from cut.data.base_dataset import get_transform
 
 # CUT_CKPT_DIR = './ckpt'
-# CUT_CKPT_DIR = '/home/steven_kuang/Documents/GR/cactuss/cut/checkpoints/transverse_aorta'
-CUT_CKPT_DIR = '/media/steven_kuang/My Passport/Work/Cactuss_models/transverse_aorta_230_nocath'
+# CUT_CKPT_DIR = '/media/steven_kuang/My Passport/Work/Cactuss_models/transverse_aorta_221'
+CUT_CKPT_DIR = '/media/steven_kuang/My Passport/Work/Cactuss_models/transverse_aorta'
 DATAROOT_CUT = './cut/datasets/aorta_for_val'
 
 try:

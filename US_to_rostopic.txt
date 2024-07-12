@@ -6,7 +6,7 @@
 	
 2.Turn the key to the right 
 	1. Run "roscore" on the host PC
-    2. Choose AUT  
+    2. Rotate the key, Choose AUT, rotate back
     3. Applications->ROSSmartServo 
     4. Press the green arrow to run 
     5. roscore in Terminal

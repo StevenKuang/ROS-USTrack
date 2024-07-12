@@ -809,14 +809,19 @@ def cactuss_infer_online(frame):
         output_cut = cv2.resize(output_cut, (W, H), interpolation=cv2.INTER_NEAREST)
     return output_cut
 
-def segment(kuka : KukaControl = None):
+def segment(kuka : KukaControl = None, initialized = False):
+    '''
+    kuka: KukaControl object
+    initialized: bool, whether the kuka object is initialized or not
+    if initialized is set to True, please start at a transversal position
+    '''
     def init_check_thread(kuka, com, data_lock):
         catheter_depth = kuka.px2m(com[1])
         kuka.move_point(com[0], com[1], W//2, 3 * H//4)
         kuka.init_steps['a7'] = True
         # rotate a7 to find the brightest axial view of the catheter 
-        kuka.rotate_a7(angle=30)
-        kuka.rotate_a7(angle=-60)
+        kuka.rotate_a7(angle=45)
+        kuka.rotate_a7(angle=-90)
         
         # wait here until kuka.init_steps['a7'] is False
         while kuka.init_steps['a7']:
@@ -942,6 +947,7 @@ def segment(kuka : KukaControl = None):
     init_mask_size = 0
     max_total_brightness = 0
     max_brightness_per_pixel = 0
+    min_mask_size = 99999
     init_pose = None
     if kuka is not None:
         start_reached_counter = kuka.destination_reached_counter
@@ -949,7 +955,7 @@ def segment(kuka : KukaControl = None):
     best_pred_mask = None
 
     first_sweep = False
-    initialized = False
+    
     with torch.cuda.amp.autocast():
         while not rospy.is_shutdown():
             if image_received:
@@ -986,10 +992,8 @@ def segment(kuka : KukaControl = None):
                     pred_mask = track_mask + new_obj_mask
                     segtracker.add_reference(frame, pred_mask)
                 else:
-                    if kuka.sweeped:
-                        pred_mask = segtracker.track(frame, update_memory=True)
-                    else:
-                        pred_mask = segtracker.track(frame,update_memory=False)
+                    pred_mask = segtracker.track(frame, update_memory=True)
+
                 
                 torch.cuda.empty_cache()
                 gc.collect()
@@ -1000,7 +1004,8 @@ def segment(kuka : KukaControl = None):
                     # com_mask_stack.append(centers_of_mass_mask(pred_mask))
                     com_mask_stack.append(tip_mask(pred_mask, 'right'))
                 else:
-                    com_mask_stack.append(com_mask_stack[-1])
+                    # com_mask_stack.append(com_mask_stack[-1])
+                    com_mask_stack.append(None)
                 
                 if kuka is None:
                     # Display the processed frame with segmentation mask
@@ -1039,12 +1044,18 @@ def segment(kuka : KukaControl = None):
                         brightness_per_pixel = total_brightness / mask_size
                         
                         if kuka.init_steps['a7']:
-                            if brightness_per_pixel > max_brightness_per_pixel:
-                                max_brightness_per_pixel = brightness_per_pixel
+                            if mask_size < min_mask_size:
+                                min_mask_size = mask_size
                                 init_pose = kuka_pose
                                 init_mask_size = mask_size
                                 best_frame = frame
                                 best_pred_mask = pred_mask
+                            # if brightness_per_pixel > max_brightness_per_pixel:
+                            #     max_brightness_per_pixel = brightness_per_pixel
+                            #     init_pose = kuka_pose
+                            #     init_mask_size = mask_size
+                            #     best_frame = frame
+                            #     best_pred_mask = pred_mask
                         else:
                             if total_brightness > max_total_brightness:
                                 max_total_brightness = total_brightness
@@ -1087,22 +1098,24 @@ def segment(kuka : KukaControl = None):
                             if kuka.init_steps['y'] and kuka.destination_reached_counter - start_reached_counter == 3:
                                 kuka.target_pose = init_pose
                                 print('Enter sweep if\n')
-                                initialized = True
+                                
                                 kuka.init_steps['y'] = False
-
                                 segtracker.restart_tracker()
                                 segtracker.add_reference(best_frame, best_pred_mask)
                                 segtracker.first_frame_mask = best_pred_mask
 
                                 print('INITIALIZED')
                                 cv2.imshow('Best y Frame', draw_mask(best_frame, best_pred_mask))
+                            
+                            if kuka.sweeped:
+                                initialized = True
                                 continue
                         
                     else:
                         # do nothing
                         # pass
                         
-                        if pred_mask is not None:
+                        if pred_mask is not None and com_mask_stack[-1] is not None:
                             threading.Thread(target=follow_segmentation_thread, args=(kuka, frame, pred_mask)).start()
 
                 # frame_with_mask = draw_mask(frame, pred_mask)
@@ -1165,7 +1178,7 @@ def main():
         segment()
     else:
         kuka.attach_probe(probe)
-        segment(kuka)
+        segment(kuka, initialized=False)
 
     # The following code is for testing the KUKA control without segmentation
     # usually the program cannot get outside of the segment function
