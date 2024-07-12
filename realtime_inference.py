@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-# ROS-related imports
 import rospy
 import message_filters
 from std_msgs.msg import Time, std_msgs
@@ -8,46 +7,38 @@ from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState, Image as ROSImage
 from iiwa_msgs.msg import JointPosition, CartesianPose, JointVelocity
 
-# System and OS-related imports
 import sys
 import os
 import subprocess
 import platform
 import time
 
-# Image processing and computer vision imports
 import cv2
 from skimage.measure import label
 from PIL import Image 
 from cv_bridge import CvBridge, CvBridgeError
 
-# Segmentation and tracking imports
 from SegTracker import SegTracker
 from model_args import aot_args, sam_args, segtracker_args
 from aot_tracker import _palette
 
-# Scientific computing imports
 import numpy as np
 import torch
 from scipy.ndimage import binary_dilation
 from scipy.spatial.transform import Rotation as R
 import gc
 
-# Transformation imports
 from tf.transformations import (
     quaternion_matrix, quaternion_about_axis, quaternion_multiply,
     quaternion_conjugate, quaternion_from_matrix
 )
 
-# Visualization imports
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-# Threading imports
 import threading
 data_lock = threading.Lock()
 
-# Custom imports
 from iiwa_python import *
 from setup_control_mode import set_force_mode, set_position_control_mode
 import cactuss_infer as ci
@@ -55,7 +46,6 @@ from cut.data.base_dataset import get_transform
 
 # Ensure current working directory is in sys.path
 sys.path.append(os.getcwd())
-
 
 CACTUSS = False
 if CACTUSS:
@@ -519,142 +509,60 @@ class KukaControl:
         print('DIFFS: ', diffs)
         print('Avg diff: ', np.mean(diffs))
         return np.mean(diffs)
-
+    
     def flange_dir_check(self, dist=0.05):
-        sleep_time = 0.5
-        current_pose = self.current_cartesian_pose 
-        center_pose = current_pose
-        print('CURRENT POSE: \n', current_pose.pose.position)
+        current_pose = self.current_cartesian_pose
         current_dirs = self.get_flange_directions(current_pose)
+        print('CURRENT POSE: \n', current_pose.pose.position)
         print('CURRENT DIRECTIONS: \n', current_dirs)
 
-        print('--------------------------------------\n')
-        print('moving in +X flange direction ('+ str(current_dirs[0]) +') for '+ str(100*dist) + ' cm: ')
-        self.move_flange_with_dir_retention(current_dirs[0], dist)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-        print('\n')
+        for i, axis in enumerate(['x', 'y', 'z']):
+            print(f'Moving in +{axis.upper()} flange direction for {100*dist} cm:')
+            self.move_flange_with_dir_retention(current_dirs[i], dist)
+            current_pose = self.current_cartesian_pose
+            print('END POSE: \n', current_pose.pose.position)
+            current_dirs = self.get_flange_directions(current_pose)
+            print('END DIRECTIONS: \n', current_dirs)
+            print('\n')
 
-        print('moving in -X flange direction ('+ str(current_dirs[0]) +') for '+ str(100*dist) + ' cm: ')
-        self.move_flange_with_dir_retention(-current_dirs[0], dist)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-
-        print('--------------------------------------\n')
-        print('moving in +Y flange direction ('+ str(current_dirs[1]) +') for '+ str(100*dist) + ' cm: ')
-        self.move_flange_with_dir_retention(current_dirs[1], dist)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-        
-        print('\n')
-        print('moving in -Y flange direction ('+ str(current_dirs[1]) +') for '+ str(100*dist) + ' cm: ')
-        self.move_flange_with_dir_retention(-current_dirs[1], dist)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-
-        print('--------------------------------------\n')
-        print('moving in +Z flange direction ('+ str(current_dirs[2]) +') for '+ str(100*dist) + ' cm: ')
-        self.move_flange_with_dir_retention(current_dirs[2], dist)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-
-        print('\n')
-        print('moving in -Z flange direction ('+ str(current_dirs[2]) +') for '+ str(100*dist) + ' cm: ')
-        self.move_flange_with_dir_retention(-current_dirs[2], dist)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
+            print(f'Moving in -{axis.upper()} flange direction for {100*dist} cm:')
+            self.move_flange_with_dir_retention(-current_dirs[i], dist)
+            current_pose = self.current_cartesian_pose
+            print('END POSE: \n', current_pose.pose.position)
+            current_dirs = self.get_flange_directions(current_pose)
+            print('END DIRECTIONS: \n', current_dirs)
+            print('--------------------------------------\n')
 
     def world_dir_check(self, dist=0.05):
-        sleep_time = 0.5
-        current_pose = self.current_cartesian_pose 
-        center_pose = current_pose
-        print('CURRENT POSE: \n', current_pose.pose.position)
+        current_pose = self.current_cartesian_pose
         current_dirs = self.get_flange_directions(current_pose)
+        print('CURRENT POSE: \n', current_pose.pose.position)
         print('CURRENT DIRECTIONS: \n', current_dirs)
 
-        print('--------------------------------------\n')
-        print('moving in +X direction for '+ str(100*dist) + ' cm: ')
-        current_pose.pose.position.x = current_pose.pose.position.x + dist 
-        print('PUBLISH POSE: \n', current_pose.pose.position)
-        self.pose_publisher.publish(current_pose)
-        # sleep till the kuka.destination_reached() is True
-        while not self.destination_reached():
-            rospy.sleep(sleep_time)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-        print('\n')
-        print('moving in -X direction for '+ str(100*dist) + ' cm: ')
-        current_pose.pose.position.x = current_pose.pose.position.x - dist
-        print('PUBLISH POSE: \n', current_pose.pose.position)
-        self.pose_publisher.publish(current_pose)
-        while not self.destination_reached():
-            rospy.sleep(sleep_time)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
+        for axis in ['x', 'y', 'z']:
+            print(f'Moving in +{axis.upper()} direction for {100*dist} cm:')
+            setattr(current_pose.pose.position, axis, getattr(current_pose.pose.position, axis) + dist)
+            print('PUBLISH POSE: \n', current_pose.pose.position)
+            self.pose_publisher.publish(current_pose)
+            while not self.destination_reached():
+                rospy.sleep(0.5)
+            current_pose = self.current_cartesian_pose
+            print('END POSE: \n', current_pose.pose.position)
+            current_dirs = self.get_flange_directions(current_pose)
+            print('END DIRECTIONS: \n', current_dirs)
+            print('\n')
 
-        print('--------------------------------------\n')
-        print('moving in +Y direction for '+ str(100*dist) + ' cm: ')
-        current_pose.pose.position.y = current_pose.pose.position.y + dist
-        print('PUBLISH POSE: \n', current_pose.pose.position)
-        self.pose_publisher.publish(current_pose)
-        while not self.destination_reached():
-            rospy.sleep(sleep_time)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-        
-        print('\n')
-        print('moving in -Y direction for '+ str(100*dist) + ' cm: ')
-        current_pose.pose.position.y = current_pose.pose.position.y - dist
-        print('PUBLISH POSE: \n', current_pose.pose.position)
-        self.pose_publisher.publish(current_pose)
-        while not self.destination_reached():
-            rospy.sleep(sleep_time)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-
-        print('--------------------------------------\n')
-        print('moving in +Z direction for '+ str(100*dist) + ' cm: ')
-        current_pose.pose.position.z = current_pose.pose.position.z + dist
-        print('PUBLISH POSE: \n', current_pose.pose.position)
-        self.pose_publisher.publish(current_pose)
-        while not self.destination_reached():
-            rospy.sleep(sleep_time)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
-        
-        print('\n')
-        print('moving in -Z direction for '+ str(100*dist) + ' cm: ')
-        current_pose.pose.position.z = current_pose.pose.position.z - dist
-        print('PUBLISH POSE: \n', current_pose.pose.position)
-        self.pose_publisher.publish(current_pose)
-        while not self.destination_reached():
-            rospy.sleep(sleep_time)
-        current_pose = self.current_cartesian_pose 
-        print('END POSE: \n', current_pose.pose.position)
-        current_dirs = self.get_flange_directions(current_pose)
-        print('END DIRECTIONS: \n', current_dirs)
+            print(f'Moving in -{axis.upper()} direction for {100*dist} cm:')
+            setattr(current_pose.pose.position, axis, getattr(current_pose.pose.position, axis) - dist)
+            print('PUBLISH POSE: \n', current_pose.pose.position)
+            self.pose_publisher.publish(current_pose)
+            while not self.destination_reached():
+                rospy.sleep(0.5)
+            current_pose = self.current_cartesian_pose
+            print('END POSE: \n', current_pose.pose.position)
+            current_dirs = self.get_flange_directions(current_pose)
+            print('END DIRECTIONS: \n', current_dirs)
+            print('--------------------------------------\n')
 
     def draw_circle(self, radius):
         import math
@@ -906,6 +814,7 @@ def segment(kuka : KukaControl = None):
         catheter_depth = kuka.px2m(com[1])
         kuka.move_point(com[0], com[1], W//2, 3 * H//4)
         kuka.init_steps['a7'] = True
+        # rotate a7 to find the brightest axial view of the catheter 
         kuka.rotate_a7(angle=30)
         kuka.rotate_a7(angle=-60)
         
@@ -922,10 +831,14 @@ def segment(kuka : KukaControl = None):
                 kuka.destination_reached_counter += 1
             kuka.target_pose = None
             print('Reached final a7')
+
+        # rotate to transversal position
         kuka.rotate_a7(angle=-90)
-        # time.sleep(2)
+        
+        # do a sweep around the x axis
+        catheter_depth = kuka.px2m(com[1])
         kuka.init_steps['x'] = True
-        kuka.sweep_list('x', [15, -30], 0.06)
+        kuka.sweep_list('x', [10, -20], catheter_depth)
         
         while kuka.init_steps['x']:
             time.sleep(0.5)
@@ -939,9 +852,11 @@ def segment(kuka : KukaControl = None):
                 kuka.destination_reached_counter += 1
             kuka.target_pose = None
             print('Reached final x')
-
+        
+        # do a sweep around the y axis
+        catheter_depth = kuka.px2m(com[1])
         kuka.init_steps['y'] = True
-        kuka.sweep_list('y', [10, -20], 0.06)
+        kuka.sweep_list('y', [10, -20], catheter_depth)
         while kuka.init_steps['y']:
             time.sleep(0.5)
 
@@ -1071,21 +986,25 @@ def segment(kuka : KukaControl = None):
                     pred_mask = track_mask + new_obj_mask
                     segtracker.add_reference(frame, pred_mask)
                 else:
-                    pred_mask = segtracker.track(frame,update_memory=True)
+                    if kuka.sweeped:
+                        pred_mask = segtracker.track(frame, update_memory=True)
+                    else:
+                        pred_mask = segtracker.track(frame,update_memory=False)
                 
                 torch.cuda.empty_cache()
                 gc.collect()
 
                 global com_mask_stack
                 if pred_mask is not None:
+                    # Choose here if you want to track the center of mass or the tip of the catheter
                     # com_mask_stack.append(centers_of_mass_mask(pred_mask))
                     com_mask_stack.append(tip_mask(pred_mask, 'right'))
                 else:
                     com_mask_stack.append(com_mask_stack[-1])
                 
                 if kuka is None:
-                    frame_with_mask = draw_mask(frame, pred_mask)
                     # Display the processed frame with segmentation mask
+                    frame_with_mask = draw_mask(frame, pred_mask)
                     cv2.circle(frame_with_mask, (com_mask_stack[-1][0], com_mask_stack[-1][1]), 5, (0, 255, 0), -1)
                     # Draw the moving direction of the catheter
                     if len(com_mask_stack) > 1:
@@ -1237,7 +1156,24 @@ def main():
     kuka = KukaControl()
     probe = UltrasoundProbe(length=0.227)       # 0.227
     rospy.init_node('kuka_control', anonymous=True)  # , disable_signals=True)
-    
+
+    # decomment this line and comment the following lines
+    # if you only want to run segmentation and not the KUKA
+    # segment()
+    if kuka.get_current_pose() is None:
+        print('KUKA not connected, segmenting without moving the robot.')
+        segment()
+    else:
+        kuka.attach_probe(probe)
+        segment(kuka)
+
+    # The following code is for testing the KUKA control without segmentation
+    # usually the program cannot get outside of the segment function
+    # if you want to use them please comment all the code above that's 
+    # related to the segment() function call
+
+    # ----------------------------------------------------------------------------------------------------
+
     # global mock_mask
     # mock_mask = np.zeros((480, 640), dtype=np.uint8)
     # win_name = 'Draw mask'
@@ -1253,16 +1189,7 @@ def main():
     # # draw the tip of the probe as red
     # cv2.circle(mock_mask, (tip[0], tip[1]), 5, (255, 0, 0), -1)
     # cv2.imshow('Tip of the probe', mock_mask)
-    # cv2.waitKey(0)
-
-    # segment()
-    if kuka.get_current_pose() is None:
-        print('KUKA not connected, segmenting without moving the robot.')
-        segment()
-    else:
-        kuka.attach_probe(probe)
-        segment(kuka)
-
+    # cv2.waitKey(0) 
     
 
     # print('##################################set_force_mode############################################')
@@ -1279,24 +1206,7 @@ def main():
     input()
 
 
-    #desired_force = INIT_FORCE
-    """ while True:
-        set_force_mode(cartesian_dof=3, desired_force=desired_force, desired_stiffness=STIFFNESS, max_deviation_pos=1000,
-                max_deviation_rotation_in_deg=1000)
-
-        print("============ Press s for stop and `Enter` to increase force by 1 ...")
-        prompt = input()
-        if prompt is 's':
-            print("============ BREAK ============")
-            print("============ END FORCE IS: ", desired_force)
-            break
-        else:
-            desired_force += 1
-            print("============ CURRENT FORCE: ", desired_force)
-    """
-        
     print(rospy.get_namespace())
-    # current_pose = kuka.get_current_pose()
     while not rospy.is_shutdown():
         kuka.attach_probe(probe)
         # kuka.world_dir_check(dist=0.03)
@@ -1305,7 +1215,7 @@ def main():
         # kuka.rotate_a7(angle=60)
         # kuka.sweep('y', 10)
         # kuka.sweep_list('y', [-20, 30, -10])
-        kuka.rotate_a7(angle=90)
+        # kuka.rotate_a7(angle=90)
         # kuka.rotate_a7(angle=-60)
         # kuka.rotate_a7(angle=30)
 

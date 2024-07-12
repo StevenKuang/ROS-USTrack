@@ -1,0 +1,188 @@
+1. Connect the ethernet cable from the robot to the PC
+	go to Network Settings
+	IPv4 -> select Manual
+	Address: 172.31.1.150
+	Netmask: 255.255.255.0
+	
+2.Turn the key to the right 
+	1. Run "roscore" on the host PC
+    2. Choose AUT  
+    3. Applications->ROSSmartServo 
+    4. Press the green arrow to run 
+    5. roscore in Terminal
+    6. Hold the robot end effector with your hand
+    7. There is a button with 4 dots – press and select Hand Guide 
+    8. Keep holding the robot and press ON button
+    9. Place the robot on a starting position for the sweep 
+    10. Press OFF 
+
+    (Choose from the touch pad – Tool:Application tool) 
+
+    
+3.    
+WITH Ultrasonics
+Open OBS:
+	Sources -> "Video Capture Device (VLC)" -> default settings 
+	& make sure it's visible & on top of your Sources.
+	Controls -> "Start Virtual Camera" -> enter your admin password
+	ALL SET!
+
+Run "roscore" in a seperate terminal if haven't yet
+
+Import -> Video Camera Stream -> Select "OBS Virtual Camera" (if you are using OBS)
+	Right click on the Video Camera Stream -> Ultrasound -> Process US Stream
+		Paste one of the following configs using the "paste" button:
+
+			<?xml version="1.0" encoding="utf-8"?>
+			<propertyfile version="1.1" name="">
+				<property name="FrameGeometryConvex">
+					<param name="offset">1022.7 164 </param>
+					<param name="isTopDown">1</param>
+					<param name="indicatorPosition">0</param>
+					<param name="coordinateSystem">0</param>
+					<param name="shortRadius">210.24</param>
+					<param name="longRadius">857.52</param>
+					<param name="openingAngle">35.26</param>
+				</property>
+			</propertyfile>
+		
+		If using Simulations:
+		
+		<?xml version="1.0" encoding="utf-8"?>
+			<propertyfile version="1.1" name="">
+				<property name="FrameGeometryConvex">
+					<param name="offset">1022.7 164 </param>
+					<param name="isTopDown">1</param>
+					<param name="indicatorPosition">0</param>
+					<param name="coordinateSystem">0</param>
+					<param name="shortRadius">215.24</param>
+					<param name="longRadius">1015.52</param>
+					<param name="openingAngle">39.26</param>
+				</property>
+			</propertyfile>
+			
+		If live US feed
+		<?xml version="1.0" encoding="utf-8"?>
+			<propertyfile version="1.1" name="">
+				<property name="FrameGeometryConvex">
+					<param name="offset">973.7 173 </param>
+					<param name="isTopDown">1</param>
+					<param name="indicatorPosition">0</param>
+					<param name="coordinateSystem">0</param>
+					<param name="shortRadius">209.24</param>
+					<param name="longRadius">1012.52</param>
+					<param name="openingAngle">38.26</param>
+				</property>
+			</propertyfile>
+
+		If linear probe on ultrasonix (when vid feed's on top left corner in Imfusion)
+
+		<?xml version="1.0" encoding="utf-8"?>
+			<propertyfile version="1.1" name="">
+				<property name="FrameGeometryLinear">
+					<param name="offset">600 120 </param>
+					<param name="isTopDown">1</param>
+					<param name="indicatorPosition">0</param>
+					<param name="coordinateSystem">0</param>
+					<param name="width">540</param>
+					<param name="depth">540</param>
+					<param name="steeringAngle">0</param>
+				</property>
+			</propertyfile>
+
+		If linear probe & centered on ultrasonix
+
+		<?xml version="1.0" encoding="utf-8"?>
+			<propertyfile version="1.1" name="">
+				<property name="FrameGeometryLinear">
+					<param name="offset">980 240 </param>
+					<param name="isTopDown">1</param>
+					<param name="indicatorPosition">0</param>
+					<param name="coordinateSystem">0</param>
+					<param name="width">540</param>
+					<param name="depth">540</param>
+					<param name="steeringAngle">0</param>
+				</property>
+			</propertyfile>
+
+		If radial probe on ultrasonics:
+
+		<?xml version="1.0" encoding="utf-8"?>
+			<propertyfile version="1.1" name="">
+				<property name="FrameGeometryConvex">
+					<param name="offset">976.7 230 </param>
+					<param name="isTopDown">1</param>
+					<param name="indicatorPosition">0</param>
+					<param name="coordinateSystem">0</param>
+					<param name="shortRadius">13</param>
+					<param name="longRadius">529.52</param>
+					<param name="openingAngle">44.26</param>
+				</property>
+			</propertyfile>
+
+	Select 'Mask Pixels outside geometry' and 'Crop around geometry' under "Processing"
+
+
+Import -> ROS Topic Image Stream Output
+		Set: /topic_name  -> 'Apply' (I used "/imfusion/imgs")
+		PRESS THE RUN ARROW ON STREAM CONTROLS (WINDOW ON THE TOP RIGHT)
+
+Select both UltrasoundStream + ROS Topic Image Stream -> Streaming -> Forward to OutStream
+
+	-> US image published on the topic you defined
+
+
+
+use 'rviz rviz' and add by topic to preview the US seq. (optional)
+or
+in a terminal, use "rostopic hz /imfusion/imgs" to see if it's published 
+
+
+Appendix:
+
+1. Some ultrasonix settings that I found helpful in order to get a better scan:
+**Probe L14-5:**
+	- The nobs:
+		- DEPTH down till 9cm (max)
+		- FREQ down till 6.6 MHz
+		- FOCUS adjust accordingly
+		- B-Mode for adjustig gain, adjust accordingly
+
+	- On the screen: (you can read the current setting in the unprocessed US stream in OBS or Imfusion)
+		- "Sector" -> turn to "Sector Ext"
+		- "Focus #" -> adjust the number of focus points indicated by little green arrows on the left
+			- Use only 1 seems to result in less prominet reflections
+		- "Focus Span" -> the distance between focus points / the size of the region in focus
+			- not sure which interpretation is correct but since we use 1 focus points it 
+			doesn't matter much
+		- "Fr Rate" -> turn to "Fr Max" 
+			- Fr decreases with the increase of Focus #:
+				- F# == 1 -> Fr Max == 53/54Hz
+				- F# == 2 -> Fr Max == 33Hz
+				...
+		- "Dyn" and "Map" can adjust the brightness of the frame, adjust accordingly
+
+
+2. Some notes on running the realtime_inference.py script:
+	- On KUKA:
+		- Please turn down the speed multiplier on the pad 
+			At the bottom right corner of the screen there's a round button,
+			click on the file-like square button in the pop-up window,
+			then use either the slider or the physical -/+ button next to the button on the pad
+			to turn down the speed multiplier from the default 100 to 10. (Or you see fit)
+		- Initialize in a correct axial pos:
+			If you are facing the KUKA directly (meaning you stand at the direct opposite of the power cable
+			going into the KUKA), you should rotate the a7 joint to a position where the Y+ sticker is facing 
+			you and the X+ sticker should be on your right hand side. Then adjust the phanton so that the aorta
+			is along the X axis of the probe, so that you should get a cross-sectional (axial) view of the aorta.
+			You can do this either in the T1 mode or use hand-guide through SmartServo.
+		- Please make sure the A1 joint is positioned around it's center or slightly in the positive range.
+			Somewhere around (0.0, +15.0) would be good, the adjust the rest of the joints accordingly, 
+			this is to prevent singularity during operation, especially after using hand guide mode multiple
+			times, the KUKA tends to rotate to the left and got to a position where there's too much load on the
+			A2 joint when A1 gets rotated to the left side. This compensates that.
+			
+	- In script:
+		- Please make sure there's enough room around the probe tip and the flange for the kuka to manuver.
+		If you operate in a restricted space, please adjust the rotation angle and the sweep_list angles 
+		in the init_check_thread(kuka, com, data_lock) method defined in segment().
