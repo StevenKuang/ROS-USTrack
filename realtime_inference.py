@@ -44,6 +44,8 @@ from setup_control_mode import set_force_mode, set_position_control_mode
 import cactuss_infer as ci
 from cut.data.base_dataset import get_transform
 
+import collections
+
 # Ensure current working directory is in sys.path
 sys.path.append(os.getcwd())
 
@@ -965,6 +967,8 @@ def segment(kuka : KukaControl = None, initialized = False):
     best_pred_mask = None
 
     first_sweep = False
+    prev_frames = collections.deque(maxlen=3)
+    bbox = None
     
     with torch.cuda.amp.autocast():
         while not rospy.is_shutdown():
@@ -977,13 +981,40 @@ def segment(kuka : KukaControl = None, initialized = False):
                     frame = cactuss_infer_online(frame)
                     
                 if frame_idx == 0:
-                    # Select the initial bbox
-                    roi = cv2.selectROI("ROI selector", frame, fromCenter=False, showCrosshair=True)
-                    bbox = [[roi[0], roi[1]], [roi[0] + roi[2], roi[1] + roi[3]]]
-                    cv2.destroyWindow("ROI selector")
+                    # # Select the initial bbox
+                    # roi = cv2.selectROI("ROI selector", frame, fromCenter=False, showCrosshair=True)
+                    # bbox = [[roi[0], roi[1]], [roi[0] + roi[2], roi[1] + roi[3]]]
+                    # cv2.destroyWindow("ROI selector")
+
+                    # auto detect bbox using frame difference
+                    if bbox is None:
+                        if len(prev_frames) < 3:
+                            prev_frames.append(frame)
+                            continue
+                        else:
+                            frame_diff = cv2.absdiff(prev_frames[0], prev_frames[1]) + cv2.absdiff(prev_frames[1], prev_frames[2])
+                            # collapse 3 channel to 1 channel
+                            frame_diff = cv2.cvtColor(frame_diff, cv2.COLOR_RGB2GRAY)
+                            _, frame_diff = cv2.threshold(frame_diff, 50, 255, cv2.THRESH_BINARY)
+
+                            contours, _ = cv2.findContours(frame_diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            contours = sorted(contours, key=cv2.contourArea)
+                            if len(contours) == 0:
+                                prev_frames.popleft()
+                                prev_frames.append(frame)
+                                continue
+                            bbox = cv2.boundingRect(contours[-1])
+                            bbox = [[bbox[0], bbox[1]], [bbox[0] + bbox[2], bbox[1] + bbox[3]]]
+                            # put a dot in the middle 
+                            dot = [[(bbox[0][0] + bbox[1][0]) // 2, (bbox[0][1] + bbox[1][1]) // 2]]
+                            dot = np.array(dot)
+                            prev_frames.clear()
+                            print('BBOX: ', bbox)
+                    # click mode
+                    pred_mask, _ = segtracker.seg_acc_click(frame, dot, np.array([1]), multimask=False)
 
                     # bbox mode
-                    pred_mask, _ = segtracker.seg_acc_bbox(frame, bbox)
+                    # pred_mask, _ = segtracker.seg_acc_bbox(frame, bbox)
                     # pred_mask = segtracker.seg(frame)
 
                     torch.cuda.empty_cache()
