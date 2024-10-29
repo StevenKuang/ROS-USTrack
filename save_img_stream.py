@@ -8,7 +8,7 @@ import os
 import numpy as np
 
 # Set the directory where images will be saved
-save_directory = "/media/steven_kuang/My Passport/Work/dataset/transverse_cactuss_retrain/trainA/test"
+save_directory = "/home/steven_kuang/Documents/Screen_Capturing/aortic_arch_phantom_depth_7.0/10"  # Set this to your desired directory
 image_topic = "/imfusion/imgs"
 
 # Create the directory if it doesn't exist
@@ -29,7 +29,7 @@ def get_initial_counter():
 counter = get_initial_counter()
 
 # Interval for saving frames
-save_interval = 30  # Set this to your desired interval
+save_interval = 2  # Set this to your desired interval
 
 # Variable to control recording state
 recording = False
@@ -96,7 +96,7 @@ def key_listener():
 def main():
     rospy.init_node('image_saver', anonymous=True)
     
-    # Subscribe to the imagqe topic
+    # Subscribe to the image topic
     rospy.Subscriber(image_topic, Image, image_callback)
     
     # Start key listener in a separate thread

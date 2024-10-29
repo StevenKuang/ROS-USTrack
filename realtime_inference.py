@@ -2,7 +2,7 @@
 
 import rospy
 import message_filters
-from std_msgs.msg import Time, std_msgs
+from std_msgs.msg import Time, std_msgs, Float64MultiArray
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState, Image as ROSImage
 from iiwa_msgs.msg import JointPosition, CartesianPose, JointVelocity
@@ -115,6 +115,15 @@ class UltrasoundProbe:
 
     def get_probe_directions(self):
         return [self.x_dir, self.y_dir, self.z_dir]
+
+    def image_point_to_world(self, u, v):
+        x_p = (u - self.image_width_px / 2) * self.LAMBDA_X * self.MM2M
+        y_p = 0
+        z_p = v * self.LAMBDA_Y * self.MM2M
+
+        P_world = self.position + x_p * self.x_dir + y_p * self.y_dir + z_p * self.z_dir
+
+        return P_world
 
 class KukaControl:
 
@@ -877,7 +886,6 @@ def segment(kuka : KukaControl = None, initialized = False):
 
         with data_lock:
             kuka.sweeped = True
-
     
     def follow_segmentation_thread(kuka, cv_image, pred_mask):
         kuka.follow_segmentation(cv_image, pred_mask, grace=True)
@@ -921,6 +929,8 @@ def segment(kuka : KukaControl = None, initialized = False):
         """
 
     image_sub = rospy.Subscriber("/imfusion/imgs", ROSImage, image_callback)
+    tip_pose_pub = rospy.Publisher('/tip_pose', Float64MultiArray, queue_size=1)
+    tip_pose = Float64MultiArray()
 
     image_callback(rospy.wait_for_message("/imfusion/imgs", ROSImage, timeout=2))
     if cv_image is None:
@@ -1002,7 +1012,11 @@ def segment(kuka : KukaControl = None, initialized = False):
                 if pred_mask is not None:
                     # Choose here if you want to track the center of mass or the tip of the catheter
                     # com_mask_stack.append(centers_of_mass_mask(pred_mask))
-                    com_mask_stack.append(tip_mask(pred_mask, 'right'))
+                    com_pose = tip_mask(pred_mask, 'right')
+                    tip_pose.data = com_pose
+                    tip_pose_pub.publish(tip_pose)
+
+                    com_mask_stack.append(com_pose)
                 else:
                     # com_mask_stack.append(com_mask_stack[-1])
                     com_mask_stack.append(None)
@@ -1112,9 +1126,6 @@ def segment(kuka : KukaControl = None, initialized = False):
                                 continue
                         
                     else:
-                        # do nothing
-                        # pass
-                        
                         if pred_mask is not None and com_mask_stack[-1] is not None:
                             threading.Thread(target=follow_segmentation_thread, args=(kuka, frame, pred_mask)).start()
 
@@ -1167,18 +1178,18 @@ def mouse_callback(event, x, y, flags, param):
 
 def main():
     kuka = KukaControl()
-    probe = UltrasoundProbe(length=0.227)       # 0.227
+    probe = UltrasoundProbe(length=0.185)       # 0.227
     rospy.init_node('kuka_control', anonymous=True)  # , disable_signals=True)
 
     # decomment this line and comment the following lines
     # if you only want to run segmentation and not the KUKA
-    # segment()
-    if kuka.get_current_pose() is None:
-        print('KUKA not connected, segmenting without moving the robot.')
-        segment()
-    else:
-        kuka.attach_probe(probe)
-        segment(kuka, initialized=False)
+    segment(initialized=True)
+    # if kuka.get_current_pose() is None:
+    #     print('KUKA not connected, segmenting without moving the robot.')
+    #     segment()
+    # else:
+    #     kuka.attach_probe(probe)
+    #     segment(kuka, initialized=False)
 
     # The following code is for testing the KUKA control without segmentation
     # usually the program cannot get outside of the segment function
@@ -1229,8 +1240,13 @@ def main():
         # kuka.sweep('y', 10)
         # kuka.sweep_list('y', [-20, 30, -10])
         # kuka.rotate_a7(angle=90)
+        # kuka.sweep('y', 10)
         # kuka.rotate_a7(angle=-60)
-        # kuka.rotate_a7(angle=30)
+        # kuka.sweep('y', 10)
+        # kuka.rotate_a7(angle=-30)
+        kuka.move_flange_with_dir_retention(kuka.probe.x_dir, -0.13)
+        kuka.move_flange_with_dir_retention(kuka.probe.x_dir, 0.13)
+
 
         # catheter_depth = 0.045
 

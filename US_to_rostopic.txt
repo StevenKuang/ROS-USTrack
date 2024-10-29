@@ -65,15 +65,41 @@ Import -> Video Camera Stream -> Select "OBS Virtual Camera" (if you are using O
 		<?xml version="1.0" encoding="utf-8"?>
 			<propertyfile version="1.1" name="">
 				<property name="FrameGeometryConvex">
-					<param name="offset">973.7 173 </param>
+					<param name="offset">974.7 179 </param>
 					<param name="isTopDown">1</param>
 					<param name="indicatorPosition">0</param>
 					<param name="coordinateSystem">0</param>
-					<param name="shortRadius">209.24</param>
-					<param name="longRadius">1012.52</param>
-					<param name="openingAngle">38.26</param>
+					<param name="shortRadius">222.24</param>
+					<param name="longRadius">994.52</param>
+					<param name="openingAngle">39</param>
 				</property>
 			</propertyfile>
+
+
+		<propertyfile version="1.1" name="">
+			<property name="FrameGeometryConvex">
+				<param name="offset">973.43953869176 155.32271370138 </param>
+				<param name="isTopDown">1</param>
+				<param name="indicatorPosition">0</param>
+				<param name="coordinateSystem">0</param>
+				<param name="shortRadius">153.280670837253</param>
+				<param name="longRadius">956.456526268279</param>
+				<param name="openingAngle">39.7323345394651</param>
+				<property name="imgDesc">
+					<param name="type">5121</param>
+					<param name="width">1920</param>
+					<param name="height">1080</param>
+					<param name="slices">1</param>
+					<param name="channels">3</param>
+					<param name="shift">0</param>
+					<param name="scale">1</param>
+					<param name="spacing">1 1 1 </param>
+					<param name="metric">0</param>
+				</property>
+			</property>
+		</propertyfile>
+
+
 
 		If linear probe on ultrasonix (when vid feed's on top left corner in Imfusion)
 

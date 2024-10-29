@@ -18,9 +18,10 @@ from cut.models import create_model
 from cut.data import create_dataset
 from cut.data.base_dataset import get_transform
 
-# CUT_CKPT_DIR = './ckpt'
+CUT_CKPT_DIR = './ckpt'
 # CUT_CKPT_DIR = '/media/steven_kuang/My Passport/Work/Cactuss_models/transverse_aorta_221'
-CUT_CKPT_DIR = '/media/steven_kuang/My Passport/Work/Cactuss_models/transverse_aorta'
+# CUT_CKPT_DIR = '/media/steven_kuang/My Passport/Work/Cactuss_models/transverse_aorta'
+# CUT_CKPT_DIR = '/home/steven_kuang/Documents/GR/cactuss/Cactuss_checkpoints/transverse_aorta_221'
 DATAROOT_CUT = './cut/datasets/aorta_for_val'
 
 try:
@@ -29,7 +30,8 @@ except ModuleNotFoundError:
     raise AssertionError('This example requires `gdown` to be installed. '
                          'Please install using `pip install gdown`')
 
-DATASET_FOLDER = './cut/datasets/test_imgs'
+# DATASET_FOLDER = './cut/datasets/test_imgs'
+DATASET_FOLDER = '/home/steven_kuang/Documents/dataset/phantom/dense'
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -133,10 +135,19 @@ if __name__ == '__main__':
     dataset = create_dataset(cactuss.opt)
     #cut_model = cactuss.load_cut_net()
 
+    # original 
+
     if not os.path.exists(cactuss.opt.results_dir):
         os.mkdir(cactuss.opt.results_dir)
 
     inference_result_v = None
+
+    H, W = cv2.imread(DATASET_FOLDER + '/testA/' + os.listdir(DATASET_FOLDER+'/testA')[0]).shape[:2]
+
+
+    out_path = DATASET_FOLDER + "/cactussed"
+    if not os.path.exists(out_path):
+        os.mkdir(out_path)
 
     for i, data in enumerate(dataset):
         # if i == 0:
@@ -150,9 +161,14 @@ if __name__ == '__main__':
        # input()
         output_cut = cactuss.infer_cut_net(data)
         output_cut_numpy = tensor2numpy(output_cut)
-        orig_input = tensor2numpy(data['A'])
+        output_cut_numpy = cv2.resize(output_cut_numpy, (W, H), interpolation=cv2.INTER_NEAREST)
+        # cv2.imshow('Inference result', output_cut_numpy)
+        # cv2.waitKey(0)
+        
+        cv2.imwrite(out_path + '/' + str(i) + '.jpg', output_cut_numpy)
+        # orig_input = tensor2numpy(data['A'])
 
-        output_cut = output_cut[:, 0, :, :].unsqueeze(0)
+        # output_cut = output_cut[:, 0, :, :].unsqueeze(0)
 
         # segm_result = cactuss.infer_seg_sim(output_cut[:, 0, :, :].unsqueeze(0))
 
@@ -163,9 +179,9 @@ if __name__ == '__main__':
         else:
             inference_result_v = torch.vstack((inference_result_v, inference_plot))
         
-        # show the results
-        cv2.imshow('Inference result', (inference_plot.cpu().numpy()*255)[0,0,:,:])
-        cv2.waitKey(0)
+        # # show the results
+        # cv2.imshow('Inference result', (inference_plot.cpu().numpy()*255)[0,0,:,:])
+        # cv2.waitKey(0)
 
     cv2.imwrite(cactuss.opt.results_dir + 'inference_result_v1.png', inference_result_v.cpu().numpy())
     print('Inference complete, output can be found in' + cactuss.opt.results_dir  + ' folder.')
